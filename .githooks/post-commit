@@ -1,0 +1,32 @@
+#!/bin/bash
+# Post-commit hook (TRACKED in the repo, same core.hooksPath wiring as pre-commit).
+#
+# Zdendys (2026-07-06): "a tool that will save new mod versions to the web as soon
+# as they're created, and delete the old ones" -- whenever a commit touches factorio-mod/ (which means
+# pre-commit already bumped info.json's version as part of THIS commit), repackage
+# and republish to the website sync folder automatically, no manual step to remember.
+#
+# Does not use `set -e`: a post-commit hook cannot undo the commit that already
+# happened, so a failure here must be visible (non-zero exit still prints to the
+# terminal) without ever appearing to have blocked or reverted anything.
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# HEAD~1 may not exist on the very first commit -- fall back to the empty tree so the
+# diff still runs (and, on a repo's first commit, correctly treats every mod file as
+# "changed").
+if git rev-parse --verify -q HEAD~1 >/dev/null; then
+  prev=HEAD~1
+else
+  prev=$(git hash-object -t tree /dev/null)
+fi
+
+changed=$(git diff --name-only "$prev" HEAD -- factorio-mod/ || true)
+if [ -n "$changed" ]; then
+  echo "[post-commit] factorio-mod/ changed -- publishing to web ..."
+  if ! "$repo_dir/scripts/publish_mod_to_web.sh"; then
+    echo "[post-commit] WARNING: publish_mod_to_web.sh failed -- mod web copy may be" \
+         "stale, republish manually: $repo_dir/scripts/publish_mod_to_web.sh" >&2
+  fi
+fi
+
+exit 0

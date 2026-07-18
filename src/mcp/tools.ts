@@ -236,6 +236,15 @@ export const TOOLS: Record<string, {
       y: { type: "number", required: true }
     }
   },
+  building_mine: {
+    desc: "Mine (destroy) any entity at coordinates - works on crash site wrecks, decoratives",
+    rcon: "/fac_mine_entity {companionId} {x} {y}",
+    params: {
+      companionId: { type: "number", required: true },
+      x: { type: "number", required: true },
+      y: { type: "number", required: true }
+    }
+  },
   building_can_place: {
     desc: "Check if entity can be placed at coordinates",
     rcon: "/fac_building_can_place {companionId} {entityName} {x} {y}",
@@ -275,34 +284,34 @@ export const TOOLS: Record<string, {
     }
   },
   building_fuel: {
-    desc: "Add fuel to entity (burner, furnace, etc)",
-    rcon: "/fac_building_fuel {companionId} {x} {y} {fuelName} {count}",
+    desc: "Add fuel to nearby entity (burner, furnace, etc) - companion must be within 3 tiles",
+    rcon: "/fac_building_fuel {companionId} {fuelName} {count}",
     params: {
       companionId: { type: "number", required: true },
-      x: { type: "number", required: true },
-      y: { type: "number", required: true },
       fuelName: { type: "string", required: true },
       count: { type: "number", required: true }
     }
   },
   building_empty: {
-    desc: "Empty contents from entity",
-    rcon: "/fac_building_empty {companionId} {x} {y}",
+    desc: "Extract items from nearby entity into companion inventory (radius 5)",
+    rcon: "/fac_building_empty {companionId} {itemName} {count} {x} {y}",
     params: {
       companionId: { type: "number", required: true },
+      itemName: { type: "string", required: true },
+      count: { type: "number", required: true },
       x: { type: "number", required: true },
       y: { type: "number", required: true }
     }
   },
   building_fill: {
-    desc: "Fill entity with items",
-    rcon: "/fac_building_fill {companionId} {x} {y} {itemName} {count}",
+    desc: "Fill nearby entity with items from companion inventory (radius 3)",
+    rcon: "/fac_building_fill {companionId} {itemName} {count} {x} {y}",
     params: {
       companionId: { type: "number", required: true },
-      x: { type: "number", required: true },
-      y: { type: "number", required: true },
       itemName: { type: "string", required: true },
-      count: { type: "number", required: true }
+      count: { type: "number", required: true },
+      x: { type: "number", required: true },
+      y: { type: "number", required: true }
     }
   },
 

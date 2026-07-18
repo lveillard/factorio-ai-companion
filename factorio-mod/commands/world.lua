@@ -7,7 +7,7 @@ commands.add_command("fac_world_nearest", nil, function(cmd)
   u.safe_command(function()
     local args = u.parse_args("^(%S+)%s+(%S+)$", cmd.parameter)
     local id, c = u.find_companion(args[1])
-    if not id then u.error_response("Companion not found"); return end
+    if not id then u.not_found(); return end
     local what = args[2]
     local name = normalize[what] or what
     local pos = c.entity.position
@@ -34,7 +34,7 @@ commands.add_command("fac_world_scan", nil, function(cmd)
   u.safe_command(function()
     local args = u.parse_args("^(%S+)%s*(%d*)%s*(%S*)$", cmd.parameter)
     local id, c = u.find_companion(args[1])
-    if not id then u.error_response("Companion not found"); return end
+    if not id then u.not_found(); return end
     local radius = tonumber(args[2]) or 10
     local filter = args[3] ~= "" and args[3] or nil
     local search = {position = c.entity.position, radius = radius}

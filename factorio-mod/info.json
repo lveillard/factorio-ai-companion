@@ -1,10 +1,10 @@
 {
   "name": "ai-companion",
-  "version": "0.13.3",
+  "version": "0.16.101",
   "title": "AI Companion",
   "author": "lveillard",
   "contact": "lvei.goes553@aleeas.com",
-  "factorio_version": "2.0",
-  "description": "AI companions with 52 RCON commands. Combat skill. Hybrid mining. Map markers. FLE-inspired queues. Factorio 2.x compatible.",
+  "factorio_version": "2.1",
+  "description": "AI companions with 55 RCON commands. Combat skill. Hybrid mining. Belt-connect pathfinding. Map markers. FLE-inspired queues. Factorio 2.x compatible.",
   "dependencies": ["base >= 2.0"]
 }

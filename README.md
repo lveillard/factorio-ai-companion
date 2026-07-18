@@ -184,6 +184,19 @@ bun run src/rcon/test-connection.ts
 bun run src/index.ts
 ```
 
+### Git hooks (required, one-time per clone)
+
+```bash
+git config core.hooksPath .githooks
+```
+
+`.githooks/pre-commit` (tracked in the repo, not `.git/hooks/`) auto-bumps
+`factorio-mod/info.json`'s version on any mod file change, and mechanically blocks
+commits that reintroduce known bug classes (e.g. `find_entities_filtered{...}[1]`
+picking the first match instead of the nearest, or a new `tick_*_queues` state
+machine with no `approach_deadline`). Bypass a false positive with
+`git commit --no-verify`.
+
 ## Credits
 
 Inspired by [Factorio Learning Environment](https://github.com/JackHopkins/factorio-learning-environment) patterns and best practices.

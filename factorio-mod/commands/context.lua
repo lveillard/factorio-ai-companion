@@ -16,7 +16,7 @@ commands.add_command("fac_context_clear", nil, function(cmd)
       u.json_response({cleared = "all", messages = count, companions = cleared})
     else
       local id, c = u.find_companion(param)
-      if not id then u.error_response("Companion not found"); return end
+      if not id then u.not_found(); return end
       local new, count = {}, 0
       for _, m in ipairs(storage.companion_messages) do
         if m.target_companion ~= id then new[#new + 1] = m else count = count + 1 end
