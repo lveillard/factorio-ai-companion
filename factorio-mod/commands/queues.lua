@@ -2,8 +2,16 @@
 local u = require("commands.init")
 local pathfind = require("commands.pathfind")
 local core = require("commands.queues_core")
+local craft = require("commands.queues_craft")
 
 local M = {}
+
+-- CRAFT (2026-07-19 size-refactor split -- see queues_craft.lua) -- re-exported so
+-- every existing external caller (commands/item.lua) keeps working unchanged.
+M.start_craft = craft.start_craft
+M.tick_craft_queues = craft.tick_craft_queues
+M.get_craft_status = craft.get_craft_status
+M.stop_craft = craft.stop_craft
 
 -- Constants
 -- TICK_INTERVAL/MINE_ADJACENT_RANGE now live in queues_core.lua (2026-07-19 size-refactor
@@ -12,7 +20,6 @@ local M = {}
 -- (harvest/gather/fuel/craft/build/belt/combat, not yet split into their own files)
 -- keeps working completely unchanged.
 local TICK_INTERVAL = core.TICK_INTERVAL
-local MIN_ACTION_TICKS = 30
 local BUILD_TICKS = 60
 local ATTACK_COOLDOWN = 15
 local ATTACK_RANGE = 6
@@ -1206,67 +1213,8 @@ function M.get_fuel_status(cid)
   return {active = true, state = q.state, fueled = q.fueled, machines = q.machines, blacklist = bl}
 end
 
--- ============ CRAFT ============
-
-function M.start_craft(cid, recipe, count)
-  local c = valid_companion(cid)
-  if not c then return {error = "Invalid companion"} end
-
-  local proto = prototypes.recipe[recipe]
-  if not proto then return {error = "Unknown recipe: " .. recipe} end
-
-  local craftable = c.entity.get_craftable_count(recipe)
-  if craftable < 1 then return {error = "Missing ingredients"} end
-
-  local actual = math.min(count, craftable)
-  local ticks = math.max(MIN_ACTION_TICKS, (proto.energy or 0.5) * 60)
-
-  storage.craft_queues[cid] = {
-    recipe = recipe,
-    target = actual,
-    crafted = 0,
-    ticks_per = ticks,
-    tick_start = game.tick
-  }
-
-  return {started = true, recipe = recipe, target = actual, ticks_per = ticks}
-end
-
-function M.tick_craft_queues()
-  process_queue("craft_queues", function(cid, q, c)
-    local elapsed = game.tick - q.tick_start
-    if elapsed < q.ticks_per then return false end
-
-    local crafted = c.entity.begin_crafting{recipe = q.recipe, count = 1}
-    if crafted < 1 then return true end
-    -- headless: fire craft-item research triggers the scripted craft would otherwise miss
-    u.fire_craft_triggers(c.entity.force, q.recipe, crafted)
-
-    q.crafted = q.crafted + 1
-    q.tick_start = game.tick
-    return q.crafted >= q.target
-  end)
-end
-
-function M.get_craft_status(cid)
-  local q = storage.craft_queues[cid]
-  if not q then return {active = false} end
-  return {
-    active = true,
-    recipe = q.recipe,
-    crafted = q.crafted,
-    target = q.target,
-    progress = math.floor((game.tick - q.tick_start) / q.ticks_per * 100)
-  }
-end
-
-function M.stop_craft(cid)
-  local q = storage.craft_queues[cid]
-  if not q then return {stopped = false} end
-  local crafted = q.crafted
-  storage.craft_queues[cid] = nil
-  return {stopped = true, crafted = crafted}
-end
+-- CRAFT moved to queues_craft.lua (2026-07-19 size-refactor split) -- see
+-- M.start_craft/tick_craft_queues/get_craft_status/stop_craft re-exports above.
 
 -- ============ BUILD ============
 
