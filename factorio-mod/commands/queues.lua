@@ -3,6 +3,7 @@ local u = require("commands.init")
 local pathfind = require("commands.pathfind")
 local core = require("commands.queues_core")
 local craft = require("commands.queues_craft")
+local combat = require("commands.queues_combat")
 
 local M = {}
 
@@ -13,6 +14,13 @@ M.tick_craft_queues = craft.tick_craft_queues
 M.get_craft_status = craft.get_craft_status
 M.stop_craft = craft.stop_craft
 
+-- COMBAT (2026-07-19 size-refactor split -- see queues_combat.lua) -- re-exported so
+-- every existing external caller (commands/combat.lua) keeps working unchanged.
+M.start_combat = combat.start_combat
+M.tick_combat_queues = combat.tick_combat_queues
+M.get_combat_status = combat.get_combat_status
+M.stop_combat = combat.stop_combat
+
 -- Constants
 -- TICK_INTERVAL/MINE_ADJACENT_RANGE now live in queues_core.lua (2026-07-19 size-refactor
 -- split, shared across harvest/gather/combat -- see that file's own comments for the
@@ -21,8 +29,6 @@ M.stop_craft = craft.stop_craft
 -- keeps working completely unchanged.
 local TICK_INTERVAL = core.TICK_INTERVAL
 local BUILD_TICKS = 60
-local ATTACK_COOLDOWN = 15
-local ATTACK_RANGE = 6
 local MINING_RANGE = 5
 local MINE_ADJACENT_RANGE = core.MINE_ADJACENT_RANGE
 -- SELECT_FAIL_TICKS (2026-07-11, live-reproduced iron-ore-gather-returns-0 bootstrap
@@ -1843,108 +1849,7 @@ function M.stop_belt_connect(cid)
   return {stopped = true}
 end
 
--- ============ COMBAT ============
-
-function M.start_combat(cid, target_pos)
-  local c = valid_companion(cid)
-  if not c then return {error = "Invalid companion"} end
-  -- Ownership guard (2026-07-11, completing task #42 -- the other 4 async subsystems
-  -- got this same guard 2026-07-08 in commit a885b21, "Extend walking_queues[cid]
-  -- ownership guard to gather/fuel/build/belt_queues"; combat was missed then, found
-  -- 2026-07-11 during an end-of-day stale-task audit. Currently dormant in production
-  -- (no Python-side caller exists yet, auto_defend is set but never read), so this
-  -- closes a real but not-yet-live gap before anything wires combat up and hits it.
-  if storage.active_step and storage.active_step[cid] then
-    return {error = "companion busy with an active task-pool step"}
-  end
-
-  local enemies = c.entity.surface.find_entities_filtered{
-    position = target_pos,
-    radius = 10,
-    force = "enemy",
-    type = {"unit", "unit-spawner"}
-  }
-  if #enemies == 0 then return {error = "No enemies"} end
-
-  table.sort(enemies, function(a, b)
-    return u.distance(a.position, c.entity.position) < u.distance(b.position, c.entity.position)
-  end)
-
-  storage.combat_queues[cid] = {
-    targets = enemies,
-    current = enemies[1],
-    cooldown = 0,
-    kills = 0
-  }
-
-  return {started = true, targets = #enemies}
-end
-
-function M.tick_combat_queues()
-  process_queue("combat_queues", function(cid, q, c)
-    if q.cooldown > 0 then
-      q.cooldown = q.cooldown - TICK_INTERVAL
-      return false
-    end
-
-    if not q.current or not q.current.valid then
-      -- Find next valid target (build new list to avoid mutation during iteration)
-      local valid_targets = {}
-      for _, t in ipairs(q.targets) do
-        if t.valid then valid_targets[#valid_targets + 1] = t end
-      end
-      q.targets = valid_targets
-
-      if #q.targets == 0 then
-        c.entity.shooting_state = {state = defines.shooting.not_shooting}
-        return true
-      end
-      q.current = table.remove(q.targets, 1)
-    end
-
-    local dist = u.distance(c.entity.position, q.current.position)
-
-    if dist <= ATTACK_RANGE then
-      c.entity.shooting_state = {
-        state = defines.shooting.shooting_enemies,
-        position = q.current.position
-      }
-      q.cooldown = ATTACK_COOLDOWN
-    else
-      c.entity.shooting_state = {state = defines.shooting.not_shooting}
-      local dir = u.get_direction(c.entity.position, q.current.position)
-      if dir then c.entity.walking_state = {walking = true, direction = dir} end
-    end
-    return false
-  end)
-end
-
-function M.get_combat_status(cid)
-  local q = storage.combat_queues[cid]
-  if not q then return {active = false} end
-
-  local remaining = #q.targets
-  if q.current and q.current.valid then remaining = remaining + 1 end
-
-  return {
-    active = true,
-    targets_remaining = remaining,
-    current_target = q.current and q.current.valid and q.current.name or nil
-  }
-end
-
-function M.stop_combat(cid)
-  local q = storage.combat_queues[cid]
-  if not q then return {stopped = false} end
-
-  local c = valid_companion(cid)
-  if c then
-    c.entity.shooting_state = {state = defines.shooting.not_shooting}
-    c.entity.walking_state = {walking = false}
-  end
-
-  storage.combat_queues[cid] = nil
-  return {stopped = true}
-end
+-- COMBAT moved to queues_combat.lua (2026-07-19 size-refactor split) -- see
+-- M.start_combat/tick_combat_queues/get_combat_status/stop_combat re-exports above.
 
 return M
