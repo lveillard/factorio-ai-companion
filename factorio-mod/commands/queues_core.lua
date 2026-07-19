@@ -22,6 +22,15 @@ M.TICK_INTERVAL = 5
 -- companion is essentially touching the resource tile.
 M.MINE_ADJACENT_RANGE = 2
 
+-- Shared tile-key helper (2026-07-19 size-refactor split -- moved here from GATHER's own
+-- private _tile_key, which several OTHER queue types also need for their own blacklists,
+-- e.g. FUEL GROUP's find_next_burner/q.blacklist below). queues.lua keeps its own alias
+-- (`local _tile_key = core.tile_key`) so GATHER's own not-yet-split call sites keep
+-- working unchanged; process_queue's APPROACH-STALL-RESPAWN recovery above still inlines
+-- the same expression itself (see its own comment) rather than calling this, to avoid
+-- touching that already-verified code for an unrelated batch.
+function M.tile_key(pos) return math.floor(pos.x) .. "," .. math.floor(pos.y) end
+
 -- Universal stale-progress backstop threshold (2026-07-06, Zdendys: "we could do
 -- that as a generic fallback for all actions" -- then: "if there's already 600
 -- ticks somewhere, let's use 600 too!", matching tick_harvest_queues's own existing stale-progress
