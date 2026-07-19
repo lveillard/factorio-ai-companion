@@ -57,15 +57,105 @@ function M.run_set_position(c, t, step)
   return true
 end
 
+-- ORE-MIXUP FIX (2026-07-19, approved-fixes item 1 -- Zdendys, live-confirmed 4x,
+-- see memory drill_wrong_ore_type_overlapping_patches_2026_07_18.md): a
+-- burner-mining-drill's real mining footprint is its whole collision box (2x2),
+-- not just the single tile find_patch/pick_orientation happened to check -- on a
+-- map where two resource patches sit close enough to overlap, a drill placed
+-- there can straddle BOTH, and its native mining_target then locks onto or
+-- fluctuates toward the WRONG one, starving the paired furnace. Zdendys's own
+-- explicit fix direction: "dokud neumis 'rozdelovace - vyzkum: logisticka sit'
+-- nedavej vrtacku na pomezi mezi 2 loziska!" (until splitters/logistics-network
+-- research is available, never place a drill straddling 2 deposits) -- reject any
+-- candidate whose FULL footprint isn't 100% one exclusive resource type, rather
+-- than only checking the single anchor tile as before.
+--
+-- SNAP-AWARE (2026-07-19, live-caught during this fix's OWN first verification
+-- attempt -- a naive version computing the footprint from collision_box +
+-- REQUESTED position FAILED to reject a genuinely-straddling live test case):
+-- Factorio snaps a placed entity's REAL position away from what was requested --
+-- confirmed live via RCON, e.g. a burner-mining-drill requested at a coal tile's
+-- own (100.5,100.5) landed at (101,101), a 0.5-tile shift on BOTH axes -- this
+-- matches queues_build.lua's own already-documented create_entity snap-shift
+-- finding for the "place" step, and explains the original bug's own real
+-- example (drill centered at an INTEGER position straddling several
+-- half-tile-offset resource entities, not centered ON any one of them). Checking
+-- the footprint at the requested (pre-snap) position therefore misses exactly
+-- the cases this fix exists to catch. Instead, actually test-place the entity
+-- (LuaSurface.create_entity does NOT raise on_built_entity events unless
+-- raise_built=true is explicitly passed, so this has no visible side effect),
+-- read its REAL, engine-computed bounding_box (already accounts for snap AND
+-- rotation, so no need to reimplement either), then destroy it immediately --
+-- same synchronous create-then-destroy shape as the teleport-and-restore
+-- technique already used elsewhere in this file for self-collision checks, so
+-- there is no tick where the drill is genuinely present, no player-visible
+-- flicker, and no persisted state change.
+--
+-- Returns true (exclusive / don't block) when the entity can't even be
+-- test-placed here (some OTHER obstruction) -- the caller's own separate
+-- can_place_entity check already handles rejecting that candidate for its own
+-- reason; this check's only job is the resource-exclusivity question.
+local function footprint_is_exclusive_resource(surf, entity_name, position, resource_name, force)
+  local test = surf.create_entity{name = entity_name, position = position, force = force}
+  if not test or not test.valid then return true end
+  local bb = test.bounding_box
+  local exclusive = true
+  for _, r in ipairs(surf.find_entities_filtered{area = bb, type = "resource"}) do
+    if r.valid and r.name ~= resource_name then
+      exclusive = false
+      break
+    end
+  end
+  test.destroy()
+  return exclusive
+end
+
+-- A find_patch step never itself names the entity that will be BUILT on the tile
+-- it picks -- that only shows up in a LATER pick_orientation step, e.g.
+-- {"type":"find_patch","resource":"coal"} followed by {"type":"pick_orientation",
+-- "primary":"burner-mining-drill",...} (COAL_PAIR_STEPS/IRON_DRILL_STEPS/
+-- STONE_DRILL_STEPS' own established pattern -- every existing find_patch caller
+-- follows it). Peek forward in the SAME task's already-fully-known step list (not
+-- yet executed, just data) to find that entity name, so find_patch can apply the
+-- SAME footprint-exclusivity standard the actual drill placement will need.
+local function find_upcoming_primary_entity(t)
+  for i = t.cursor + 1, #t.steps do
+    if t.steps[i].type == "pick_orientation" then return t.steps[i].primary end
+  end
+  return nil
+end
+
+-- Sibling lookup for the SECONDARY-side exclusivity check below: when a
+-- coal_pair-class task's secondary is also a mining-drill, "what resource is
+-- the primary (at ctx.px/py) actually mining" needs an authoritative answer,
+-- not a guess. The find_patch step that originally set ctx.px/py already
+-- carries that answer in its own step.resource -- look BACKWARD from the
+-- current step for the most recent one, instead of an ambiguous
+-- find_entities_filtered{...}[1] scan around ctx.px/py (2026-07-19,
+-- cubic-dev-ai-class review finding on this fix's own first draft: an
+-- unsorted [1] pick right next to a genuinely straddling tile could itself
+-- pick the WRONG resource, defeating the point of this whole check).
+local function find_governing_resource(t)
+  for i = t.cursor - 1, 1, -1 do
+    if t.steps[i].type == "find_patch" then return t.steps[i].resource end
+  end
+  return nil
+end
+
 function M.run_find_patch(c, t, step)
   local surf = c.entity.surface
   local es = surf.find_entities_filtered{name = step.resource, position = c.entity.position, radius = 400}
   table.sort(es, function(a, b)
     return u.distance(a.position, c.entity.position) < u.distance(b.position, c.entity.position)
   end)
+  local primary_entity = find_upcoming_primary_entity(t)
+  local primary_is_drill = primary_entity and prototypes.entity[primary_entity]
+    and prototypes.entity[primary_entity].type == "mining-drill"
   for _, e in ipairs(es) do
     if e.valid and (e.amount or 1) > 0
-       and surf.find_non_colliding_position("character", e.position, WALK_REACH, 0.5) then
+       and surf.find_non_colliding_position("character", e.position, WALK_REACH, 0.5)
+       and (not primary_is_drill
+            or footprint_is_exclusive_resource(surf, primary_entity, e.position, step.resource, c.entity.force)) then
       t.ctx.px, t.ctx.py = e.position.x, e.position.y
       return true
     end
@@ -241,7 +331,26 @@ run_pick_orientation_checks = function(c, t, step, surf)
     local secondary_moved = clear_natural_obstacles(surf, step.secondary, {x = sx, y = sy})
     local secondary_ok = surf.can_place_entity{name = step.secondary, position = {x = sx, y = sy}, direction = secondary_dir, force = c.entity.force}
     restore_moved(secondary_moved)
-    if primary_ok and secondary_resource_ok and secondary_ok then
+    -- ORE-MIXUP FIX, secondary side (2026-07-19, approved-fixes item 1 -- see
+    -- footprint_is_exclusive_resource's own comment above for the full mechanism/
+    -- Zdendys quote): applies whenever the SECONDARY being placed is itself a
+    -- mining-drill (e.g. coal_pair's two facing drills) -- the primary-side check
+    -- in run_find_patch only ever covers the PRIMARY's own footprint, so a
+    -- straddling SECONDARY drill was still possible without this. Expected
+    -- resource: step.secondary_resource when the caller explicitly named one
+    -- (furnace-upgrade task -- primary_exists, ctx.px/py is an EXISTING furnace,
+    -- not a resource tile, so there's nothing to read off it), else the resource
+    -- named by the find_governing_resource lookup above (coal_pair-class tasks --
+    -- primary IS a resource tile there, its OWN find_patch step is the
+    -- authoritative source, not a nearby-entity guess).
+    local secondary_exclusive_ok = true
+    if prototypes.entity[step.secondary] and prototypes.entity[step.secondary].type == "mining-drill" then
+      local expected_resource = step.secondary_resource or find_governing_resource(t)
+      if expected_resource then
+        secondary_exclusive_ok = footprint_is_exclusive_resource(surf, step.secondary, {x = sx, y = sy}, expected_resource, c.entity.force)
+      end
+    end
+    if primary_ok and secondary_resource_ok and secondary_ok and secondary_exclusive_ok then
       t.ctx.sx, t.ctx.sy = sx, sy
       t.ctx.dir = real_dir
       t.ctx.dir2 = secondary_dir
@@ -261,9 +370,10 @@ run_pick_orientation_checks = function(c, t, step, surf)
     -- change to the entity-name part).
     local diag = u.dump_context(surf, {x = sx, y = sy}, {radius = 1.5})
     candidate_diag[#candidate_diag + 1] = string.format(
-      "off(%d,%d)@(%.1f,%.1f) primary_ok=%s secondary_resource_ok=%s secondary_ok=%s tile=%s nearby=[%s]",
+      "off(%d,%d)@(%.1f,%.1f) primary_ok=%s secondary_resource_ok=%s secondary_ok=%s " ..
+      "secondary_exclusive_ok=%s tile=%s nearby=[%s]",
       off[1], off[2], sx, sy, tostring(primary_ok), tostring(secondary_resource_ok),
-      tostring(secondary_ok), diag.tile, table.concat(diag.nearby, ","))
+      tostring(secondary_ok), tostring(secondary_exclusive_ok), diag.tile, table.concat(diag.nearby, ","))
   end
   u.log_error("pick_orientation: no free orientation for " .. step.secondary ..
     " around (" .. t.ctx.px .. "," .. t.ctx.py .. ") -- " .. table.concat(candidate_diag, " | "),
