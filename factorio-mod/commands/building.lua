@@ -270,6 +270,64 @@ commands.add_command("fac_building_empty", nil, function(cmd)
   end)
 end)
 
+-- ORE-MIXUP FOLLOW-UP FIX (2026-07-19, approved-fixes item 2 -- Zdendys): a furnace's
+-- output slot can end up holding a DIFFERENT item than what it's currently smelting --
+-- e.g. a drill mining the wrong ore for a while (the now-separately-fixed straddling-
+-- footprint bug), or the companion hand-feeding it the wrong raw material -- and once
+-- that happens, the furnace can't produce anything further (its single output slot is
+-- occupied) no matter what correct ore arrives afterward. fac_building_empty above
+-- only ever extracts a SPECIFIC named item, so a caller that only ever asks for the
+-- EXPECTED plate type has no way to notice or clear a wrong-item jam. This command is
+-- the dedicated "make this furnace work again" action: whatever is actually sitting in
+-- crafter_output, if it ISN'T the expected item, evacuate it into the companion's
+-- inventory regardless of what it is -- Zdendys: in this game phase an occasional
+-- "wrong" plate landing in inventory is fine (gets used soon), the only goal is getting
+-- it OUT of the furnace so smelting can resume.
+commands.add_command("fac_building_clear_wrong_output", nil, function(cmd)
+  u.safe_command(function()
+    local args = u.parse_args("^(%S+)%s+(%S+)%s+([%d.-]+)%s+([%d.-]+)$", cmd.parameter)
+    local id, c = u.find_companion(args[1])
+    if not id then u.not_found(); return end
+    local expected_item, x, y = args[2], tonumber(args[3]), tonumber(args[4])
+    if not x or not y then u.error_response("Invalid coordinates"); return end
+    local pos = {x = x, y = y}
+    if u.distance(c.entity.position, pos) > (c.entity.reach_distance or 10) then
+      u.json_response({id = id, error = "Too far"}); return
+    end
+    -- Same closest-entity-to-target-tile lookup as fac_building_empty above (same
+    -- resource-tile tie-break rationale -- see that command's own comment).
+    local es = c.entity.surface.find_entities_filtered{position = pos, radius = 5}
+    local target, bd = nil, 1e18
+    for _, e in ipairs(es) do
+      if e.valid and e ~= c.entity and e.type ~= "resource" then
+        local dx, dy = e.position.x - pos.x, e.position.y - pos.y
+        local d = dx * dx + dy * dy
+        if d < bd then bd, target = d, e end
+      end
+    end
+    if not target then u.json_response({id = id, cleared = false, error = "Not found"}); return end
+    local inv = target.get_inventory(defines.inventory.crafter_output)
+    if not inv then u.json_response({id = id, cleared = false, error = "No output inventory"}); return end
+    local contents = inv.get_contents()
+    for _, stack in ipairs(contents) do
+      if stack.name ~= expected_item then
+        local rm = inv.remove{name = stack.name, count = stack.count, quality = stack.quality}
+        if rm > 0 then
+          -- insert()'s own return value MUST be used, not assumed to equal `rm` --
+          -- same fix class as fac_building_empty above (2026-07-18 finding).
+          local ins = c.entity.insert{name = stack.name, count = rm, quality = stack.quality}
+          if ins < rm then inv.insert{name = stack.name, count = rm - ins, quality = stack.quality} end
+          if ins > 0 then
+            u.json_response({id = id, cleared = true, item = stack.name, count = ins})
+            return
+          end
+        end
+      end
+    end
+    u.json_response({id = id, cleared = false})
+  end)
+end)
+
 commands.add_command("fac_building_fill", nil, function(cmd)
   u.safe_command(function()
     local args = u.parse_args("^(%S+)%s+(%S+)%s*(%d*)%s*([%d.-]*)%s*([%d.-]*)$", cmd.parameter)
