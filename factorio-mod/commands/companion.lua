@@ -150,6 +150,24 @@ commands.add_command("fac_respawn_entity", nil, function(cmd)
   end)
 end)
 
+-- Manual/test-triggerable entry point for the rare-symptom save-for-later-review
+-- mechanism (2026-07-19/20, see u.rare_symptom_save's own comment in init.lua for
+-- the full design) -- mirrors fac_respawn_entity's own dual purpose immediately
+-- above: a genuine manual escape hatch (Zdendys can force a save+code manually for
+-- anything HE wants captured, not just the 4 automatic trigger points) AND a live
+-- test entry point for the debounce mechanism, since require() (and therefore the
+-- shared `u` module) isn't reachable from a bare RCON /c command outside
+-- control.lua's own load.
+commands.add_command("fac_debug_rare_symptom_save", nil, function(cmd)
+  u.safe_command(function()
+    local args = u.parse_args("^(%S+)$", cmd.parameter)
+    local code = args[1]
+    if not code then u.error_response("Usage: fac_debug_rare_symptom_save <CODE>"); return end
+    local saved = u.rare_symptom_save(code)
+    u.json_response({code = code, saved = saved})
+  end)
+end)
+
 commands.add_command("fac_companion_position", nil, function(cmd)
   u.safe_command(function()
     local id, c = u.find_companion(cmd.parameter)

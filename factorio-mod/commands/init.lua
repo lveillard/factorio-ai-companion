@@ -150,6 +150,36 @@ function M.log_error(msg, ctx)
   if #storage.errors > 50 then table.remove(storage.errors, 1) end
 end
 
+-- RARE-SYMPTOM SAVE-FOR-LATER-REVIEW (2026-07-19/20, Zdendys's own decision --
+-- see STATUS.md's "Rare/hard-to-reproduce symptoms" section for the full code
+-- table): for a small set of low-frequency, hard-to-repro bugs, don't chase them
+-- live -- instead, save the game the MOMENT detection code recognizes one
+-- happening, named after the symptom's code, so Zdendys can load that exact
+-- state later and inspect it visually at his own pace. `game.server_save(name)`
+-- (confirmed live, 2026-07-19/20: works under this headless/RCON-driven setup,
+-- completes effectively synchronously for a normal-sized save, and a slash in
+-- the name genuinely creates a real subdirectory under ~/.factorio/saves/ --
+-- not silently flattened/sanitized as originally suspected).
+--
+-- DEBOUNCED per code (not per call): a genuinely rare symptom firing twice in
+-- quick succession (e.g. the SAME stall being logged on consecutive ticks by
+-- more than one check) must not spam a save every single time -- one save per
+-- code per RARE_SYMPTOM_SAVE_COOLDOWN_TICKS is enough to capture the state for
+-- review; repeats within the cooldown window are silently skipped (returns
+-- false so a caller COULD log that distinctly if it ever mattered, though no
+-- current caller does).
+local RARE_SYMPTOM_SAVE_COOLDOWN_TICKS = 3600  -- ~60s at 60 UPS, regardless of game.speed
+function M.rare_symptom_save(code)
+  storage.rare_symptom_last_save = storage.rare_symptom_last_save or {}
+  local last = storage.rare_symptom_last_save[code]
+  if last and (game.tick - last) < RARE_SYMPTOM_SAVE_COOLDOWN_TICKS then
+    return false
+  end
+  storage.rare_symptom_last_save[code] = game.tick
+  game.server_save("rare_symptoms/" .. code .. "/" .. code .. "_" .. game.tick)
+  return true
+end
+
 -- dump_context (2026-07-12, task #46): shared forensic snapshot for on-failure
 -- diagnostics -- consolidates the find_entities_filtered{position,radius} + nearby-name
 -- list + get_tile name pattern that queues.lua's collision diagnostic and

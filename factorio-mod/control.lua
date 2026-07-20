@@ -306,6 +306,11 @@ script.on_event(defines.events.on_script_path_request_finished, function(ev)
       "walking path request for companion %d returned NO PATH (target=(%.1f,%.1f))",
       cid, q.target and q.target.x or -1, q.target and q.target.y or -1),
       "walk_path_no_path")
+    -- RARE-WALK-01 (2026-07-19/20, Zdendys's save-for-later-review scheme -- see
+    -- STATUS.md and u.rare_symptom_save's own comment for the full mechanism):
+    -- captures the exact moment/state of a no-path failure for later visual
+    -- inspection, debounced per-code so a repeat within the cooldown doesn't spam.
+    u.rare_symptom_save("RARE-WALK-01")
   end
 end)
 
@@ -553,6 +558,14 @@ local function process_walking_queues()
                 "walking path for companion %d needs_destroy_to_reach at (%.1f,%.1f) but "
                 .. "no mineable tree/rock found there -- likely a cliff (needs explosives, "
                 .. "not yet handled)", cid, goal.x, goal.y), "walk_path_unclearable")
+              -- RARE-WALK-02 (2026-07-19/20, save-for-later-review scheme -- see
+              -- u.rare_symptom_save's own comment): this is the genuine
+              -- "decided a destroy is needed but it never actually happens" case
+              -- today (the OLDER walk_path_needs_destroy log a few lines up fires
+              -- unconditionally whenever a waypoint is flagged, even when the
+              -- "walk_path_clearing" branch above successfully handles it moments
+              -- later -- this branch is the one where clearing genuinely fails).
+              u.rare_symptom_save("RARE-WALK-02")
             end
           end
         else

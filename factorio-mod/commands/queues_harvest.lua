@@ -143,6 +143,12 @@ function M.tick_harvest_queues()
           "within true mining adjacency (%d tiles) -- caller likely approached with too loose a " ..
           "tolerance", cid, q.harvested, q.target, q.resource_name or "?", MINE_ADJACENT_RANGE),
           "harvest_queue")
+        -- RARE-MINE-01 (2026-07-19/20, save-for-later-review scheme -- see
+        -- u.rare_symptom_save's own comment): this specific ending (adjacency
+        -- exhausted, not the depleted/inventory-full endings elsewhere in this
+        -- same function that share the "harvest_queue" tag) is the stone-harvest
+        -- adjacency-exhaustion stall.
+        u.rare_symptom_save("RARE-MINE-01")
         return true
       end
       return false   -- fresh candidate selected -- re-check adjacency/progress next tick
