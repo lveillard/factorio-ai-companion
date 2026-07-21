@@ -123,12 +123,27 @@ end
 -- to the next patch until the inventory holds `count` of the mined product (or no reachable patch
 -- remains). Replaces the Python go_to + start_harvest + poll glue.
 
+-- 4-state resource-tile model (2026-07-21, Zdendys's own explicit design): a
+-- resource-bearing tile is always in exactly one of: (a) available, (b) a
+-- mining-drill already stands on it, (c) it carries a different resource than
+-- its neighboring field (only relevant to a DRILL's own 2x2+ footprint, not to
+-- hand-mining a single 1x1 entity -- already handled at drill-PLACEMENT time by
+-- footprint_is_exclusive_resource in task_pool_steps.lua, not here), (d)
+-- already mined out. (a)/(d) were already correctly handled here (amount>0);
+-- this closes state (b), previously completely unchecked -- the companion
+-- could hand-mine a tile an automated drill was ALREADY covering, competing
+-- with its own automation for no reason.
+local function drill_already_covers(surf, position)
+  return #surf.find_entities_filtered{position = position, radius = 1, type = "mining-drill"} > 0
+end
+
 local function find_reachable_resource(surf, from, resource, blacklist)
   local ores = surf.find_entities_filtered{name = resource, position = from, radius = 400}
   table.sort(ores, function(a, b) return u.distance(a.position, from) < u.distance(b.position, from) end)
   for _, e in ipairs(ores) do
     if e.valid and (e.amount or 0) > 0
        and not (blacklist and blacklist[_tile_key(e.position)])
+       and not drill_already_covers(surf, e.position)
        and surf.count_entities_filtered{type = "unit-spawner", position = e.position, radius = 20} == 0
        and surf.find_non_colliding_position("character", e.position, 2.5, 0.5) then
       return e
@@ -143,11 +158,12 @@ local function find_reachable_resource(surf, from, resource, blacklist)
   -- "gathered 0" with no further clue. Zdendys: "If something is 'unreachable' it is a
   -- bug! NEVER the map's fault!" -- this is a diagnostic-only addition, no behavior change.
   local total = #ores
-  local depleted, blacklisted, near_spawner, no_stand_pos = 0, 0, 0, 0
+  local depleted, blacklisted, drilled, near_spawner, no_stand_pos = 0, 0, 0, 0, 0
   for _, e in ipairs(ores) do
     if e.valid then
       if (e.amount or 0) <= 0 then depleted = depleted + 1
       elseif blacklist and blacklist[_tile_key(e.position)] then blacklisted = blacklisted + 1
+      elseif drill_already_covers(surf, e.position) then drilled = drilled + 1
       elseif surf.count_entities_filtered{type = "unit-spawner", position = e.position, radius = 20} > 0 then
         near_spawner = near_spawner + 1
       elseif not surf.find_non_colliding_position("character", e.position, 2.5, 0.5) then
@@ -157,8 +173,8 @@ local function find_reachable_resource(surf, from, resource, blacklist)
   end
   u.log_error(string.format(
     "find_reachable_resource: no usable %s within 400 tiles of (%.1f,%.1f) -- total=%d "
-    .. "depleted=%d blacklisted=%d near_spawner=%d no_stand_pos=%d",
-    resource, from.x, from.y, total, depleted, blacklisted, near_spawner, no_stand_pos),
+    .. "depleted=%d blacklisted=%d drilled=%d near_spawner=%d no_stand_pos=%d",
+    resource, from.x, from.y, total, depleted, blacklisted, drilled, near_spawner, no_stand_pos),
     "gather_queue")
   return nil
 end
@@ -409,19 +425,23 @@ function M.tick_gather_queues()
           return false
         end
         q.blacklist = q.blacklist or {}
-        -- Blacklist every tile of `resource` within patch range (not just q.entity_pos):
-        -- an entirely unreachable patch (e.g. coal across water from a far-flung shore) is
-        -- typically dozens of adjacent 1-tile entities at nearly identical distance, so
-        -- blacklisting only the one candidate tile let "find" immediately re-pick the NEXT
-        -- tile of the SAME dead patch -- exhausting a large patch needed O(patch size)
-        -- deadline cycles, each costing real time, and could burn through the entire 180s
-        -- Python-side gather() timeout with zero gathered (live-caught 2026-07-04,
-        -- scripts/test_phase_b_asm.py: coal gather near a far shore stuck in "approach"
-        -- for the full 180s, 0 coal). radius=15 mirrors the same "same patch" radius
-        -- already used by spatial_demo.py's nearest(exclude_r=15.0).
-        for _, e in ipairs(surf.find_entities_filtered{name = q.resource, position = q.entity_pos, radius = 15}) do
-          q.blacklist[_tile_key(e.position)] = true
-        end
+        -- NARROWED to the single candidate tile only (2026-07-21, Zdendys's own
+        -- explicit decision after discussing the tradeoff live): the original
+        -- radius=15 "whole neighborhood" sweep (kept here in history: blacklisting
+        -- every tile of `resource` within patch range, on the theory that an
+        -- entirely unreachable patch -- e.g. coal across water -- is typically
+        -- dozens of adjacent 1-tile entities at nearly identical distance, so
+        -- sweeping saved O(patch size) repeated deadline cycles) was the
+        -- suspected root cause of the recurring "mass-coal-blacklist" bug
+        -- (mass_coal_blacklist_recurs_despite_respawn_retry_fix_2026_07_18.md):
+        -- Zdendys's own 4-state resource-tile model treats blacklisting as
+        -- something that should never happen based on an ASSUMED regional
+        -- property. Accepted tradeoff, explicit and deliberate: a genuinely
+        -- unreachable whole patch across water will now need one approach_deadline
+        -- cycle PER TILE to exhaust instead of one sweep -- slower in that
+        -- specific case, but no longer risks wrongly condemning reachable coal
+        -- alongside genuinely-unreachable coal.
+        q.blacklist[_tile_key(q.entity_pos)] = true
         storage.walking_queues[cid] = nil
         c.entity.walking_state = {walking = false}
         q.state = "find"
@@ -593,24 +613,25 @@ function M.tick_gather_queues()
             "(best_d=%.2f) -- blacklisting, trying next patch",
             q.resource, res_key, q.select_fail_ticks, best_d), "gather_queue")
           q.blacklist = q.blacklist or {}
-          -- Track exactly which keys THIS sweep adds (2026-07-11, post-commit review
-          -- finding): q.blacklist is a single shared table that ALSO accumulates
-          -- entries from the unrelated approach_deadline branch above (genuinely
-          -- unreachable patches, e.g. across water) and from any caller-seeded
-          -- `exclude` list (start_gather). The respawn trigger below used to wipe
-          -- q.blacklist wholesale on the theory that "the tiles just blacklisted were
-          -- victims of the broken entity" -- true for THIS sweep's own keys, but it
-          -- silently un-blacklisted every OTHER entry too, letting "find" immediately
-          -- re-attempt a patch already proven genuinely unreachable earlier in this
-          -- same gather() call (exactly the wasted-approach_deadline-cycle scenario
-          -- that mechanism exists to prevent). Recording just_blacklisted here lets the
-          -- respawn branch undo ONLY its own additions.
-          local just_blacklisted = {}
-          for _, e in ipairs(surf.find_entities_filtered{name = q.resource, position = q.entity_pos, radius = 15}) do
-            local key = _tile_key(e.position)
-            q.blacklist[key] = true
-            just_blacklisted[#just_blacklisted + 1] = key
-          end
+          -- NARROWED to the single tile that actually failed to select (2026-07-21,
+          -- Zdendys's own explicit decision, same live discussion as the
+          -- approach_deadline sweep above): the original radius=15 sweep here was
+          -- built on the theory that select-fail victims cluster regionally, but
+          -- this exact function's own comment history already flagged doubt about
+          -- that ("in roughly half of live test runs the 'didn't stick' failure
+          -- recurs on EVERY candidate tried in the session, not just one bad
+          -- tile" -- SESSION-WIDE, not regional) -- sweeping 15 perfectly good
+          -- neighboring tiles over a per-entity/per-session engine glitch is a
+          -- second, independent suspected contributor to the recurring
+          -- "mass-coal-blacklist" bug, alongside the approach_deadline sweep.
+          -- Blacklist exactly `res` (the specific entity that just failed to
+          -- select), not q.entity_pos (the original approach target, which can
+          -- differ once "mine" has re-derived a closer candidate) or a radius
+          -- sweep around it. just_blacklisted kept as a single-element list so
+          -- the respawn-undo logic below (which iterates it) needs no other
+          -- change.
+          local just_blacklisted = {_tile_key(res.position)}
+          q.blacklist[just_blacklisted[1]] = true
           q.select_fail_ticks = nil
           q.last_res_key = nil
           q.state = "find"
