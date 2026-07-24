@@ -123,18 +123,39 @@ end
 -- to the next patch until the inventory holds `count` of the mined product (or no reachable patch
 -- remains). Replaces the Python go_to + start_harvest + poll glue.
 
--- 4-state resource-tile model (2026-07-21, Zdendys's own explicit design): a
--- resource-bearing tile is always in exactly one of: (a) available, (b) a
--- mining-drill already stands on it, (c) it carries a different resource than
--- its neighboring field (only relevant to a DRILL's own 2x2+ footprint, not to
+-- 4-state resource-tile model (2026-07-21, Zdendys's own explicit design; WIDENED
+-- 2026-07-24 per his own direct instruction "netěžit suroviny pod postavenými
+-- budovami" -- don't mine resources under built buildings): a resource-bearing
+-- tile is always in exactly one of: (a) available, (b) a building already
+-- covers it -- ORIGINALLY checked only mining-drill (2026-07-21), now ANY
+-- built building (furnace, chest, belt, inserter, assembler, pole, ... -- see
+-- building_covers_tile below), (c) it carries a different resource than its
+-- neighboring field (only relevant to a DRILL's own 2x2+ footprint, not to
 -- hand-mining a single 1x1 entity -- already handled at drill-PLACEMENT time by
 -- footprint_is_exclusive_resource in task_pool_steps.lua, not here), (d)
 -- already mined out. (a)/(d) were already correctly handled here (amount>0);
--- this closes state (b), previously completely unchecked -- the companion
--- could hand-mine a tile an automated drill was ALREADY covering, competing
--- with its own automation for no reason.
-local function drill_already_covers(surf, position)
-  return #surf.find_entities_filtered{position = position, radius = 1, type = "mining-drill"} > 0
+-- state (b) closes two related gaps: the companion must not hand-mine a tile
+-- an automated drill is ALREADY covering (competing with its own automation
+-- for no reason), and must not attempt to hand-mine a tile ANY OTHER building
+-- (chest, furnace, belt, ...) happens to sit on/over either.
+--
+-- Resource entities coexist at the same position as normal buildings in
+-- Factorio (confirmed elsewhere in this codebase, e.g. building.lua's
+-- fac_building_empty, which must explicitly exclude type=="resource" from an
+-- unfiltered find_entities_filtered for the identical reason) -- so this check
+-- must explicitly exclude "resource" itself, plus natural/non-built entities
+-- (trees, rocks, cliffs, characters, dropped items, biters) that are NOT
+-- "built buildings" and must never block hand-mining just for existing nearby.
+local NON_BUILDING_TYPES = {
+  resource = true, character = true, tree = true, ["simple-entity"] = true,
+  cliff = true, ["item-entity"] = true, ["item-request-proxy"] = true,
+  unit = true, ["unit-spawner"] = true,
+}
+local function building_covers_tile(surf, position)
+  for _, e in ipairs(surf.find_entities_filtered{position = position, radius = 1}) do
+    if e.valid and not NON_BUILDING_TYPES[e.type] then return true end
+  end
+  return false
 end
 
 local function find_reachable_resource(surf, from, resource, blacklist)
@@ -143,7 +164,7 @@ local function find_reachable_resource(surf, from, resource, blacklist)
   for _, e in ipairs(ores) do
     if e.valid and (e.amount or 0) > 0
        and not (blacklist and blacklist[_tile_key(e.position)])
-       and not drill_already_covers(surf, e.position)
+       and not building_covers_tile(surf, e.position)
        and surf.count_entities_filtered{type = "unit-spawner", position = e.position, radius = 20} == 0
        and surf.find_non_colliding_position("character", e.position, 2.5, 0.5) then
       return e
@@ -158,12 +179,12 @@ local function find_reachable_resource(surf, from, resource, blacklist)
   -- "gathered 0" with no further clue. Zdendys: "If something is 'unreachable' it is a
   -- bug! NEVER the map's fault!" -- this is a diagnostic-only addition, no behavior change.
   local total = #ores
-  local depleted, blacklisted, drilled, near_spawner, no_stand_pos = 0, 0, 0, 0, 0
+  local depleted, blacklisted, built_on, near_spawner, no_stand_pos = 0, 0, 0, 0, 0
   for _, e in ipairs(ores) do
     if e.valid then
       if (e.amount or 0) <= 0 then depleted = depleted + 1
       elseif blacklist and blacklist[_tile_key(e.position)] then blacklisted = blacklisted + 1
-      elseif drill_already_covers(surf, e.position) then drilled = drilled + 1
+      elseif building_covers_tile(surf, e.position) then built_on = built_on + 1
       elseif surf.count_entities_filtered{type = "unit-spawner", position = e.position, radius = 20} > 0 then
         near_spawner = near_spawner + 1
       elseif not surf.find_non_colliding_position("character", e.position, 2.5, 0.5) then
@@ -173,8 +194,8 @@ local function find_reachable_resource(surf, from, resource, blacklist)
   end
   u.log_error(string.format(
     "find_reachable_resource: no usable %s within 400 tiles of (%.1f,%.1f) -- total=%d "
-    .. "depleted=%d blacklisted=%d drilled=%d near_spawner=%d no_stand_pos=%d",
-    resource, from.x, from.y, total, depleted, blacklisted, drilled, near_spawner, no_stand_pos),
+    .. "depleted=%d blacklisted=%d built_on=%d near_spawner=%d no_stand_pos=%d",
+    resource, from.x, from.y, total, depleted, blacklisted, built_on, near_spawner, no_stand_pos),
     "gather_queue")
   return nil
 end
@@ -474,31 +495,65 @@ function M.tick_gather_queues()
       -- engine is ATTEMPTING to mine, not that progress is actually advancing.
       local mine_diag_can_insert = inv.can_insert({name = q.product, count = 1})
       local mine_diag_pos = {x = c.entity.position.x, y = c.entity.position.y}
-      -- Pick the NEAREST resource entity to the companion's ACTUAL position, not just any
-      -- entity within radius=1 of the originally-recorded q.entity_pos: a resource patch is
-      -- many individually-tiled entities ~1 tile apart, so a radius=1 query around q.entity_pos
-      -- can catch 2+ neighboring tiles, and an unsorted [1] pick can be the WRONG (slightly
-      -- farther) one -- close enough to have satisfied the "approach" exit check against
-      -- q.entity_pos, yet just over MINE_ADJACENT_RANGE from where the companion is actually
-      -- standing. Live-caught 2026-07-03: state flipped mine->find within one tick, mining_state
-      -- never even attempted (selected stayed nil), even though the companion visibly reached
-      -- and stopped right next to the coal.
-      local candidates = surf.find_entities_filtered{name = q.resource, position = q.entity_pos, radius = 2}
-      local res, best_d = nil, 1e18
-      for _, e in ipairs(candidates) do
-        if e.valid then
-          local d = u.distance(c.entity.position, e.position)
-          if d < best_d then best_d, res = d, e end
+      -- HYSTERESIS (2026-07-24, Zdendys's own insight: in normal play, mining follows
+      -- wherever the player's CURSOR points -- a target only changes when the PLAYER
+      -- moves the cursor, never spontaneously while it stays still). This code used to
+      -- re-derive "nearest resource entity to my current position" from scratch on
+      -- EVERY tick, even while already mid-mine on a perfectly good tile -- so two
+      -- near-tied neighbor entities (resource entities sit on a 1-unit grid, so
+      -- immediate neighbors are exactly 1 tile apart) could trade places as "nearest"
+      -- on a hair of the companion's own position jitter, or an exact floating-point
+      -- tie in the `d < best_d` comparison below -- silently interrupting
+      -- mining_progress every time `selected` got reassigned to the new identity (see
+      -- gather_mid_mine_target_flip_live_evidence_2026_07_18.md: 4 live occurrences,
+      -- best_d 0.58-1.74 -- exactly this shape, and this exact hypothesis was already
+      -- flagged as suspected but not yet fixed by the 2026-07-09 diagnostic trace
+      -- above). FIX: keep mining the SAME entity as last tick for as long as it stays
+      -- valid, unexhausted, in range, and not newly covered by a building -- the
+      -- "pick nearest candidate" search only runs on the first tick of a mine attempt,
+      -- or once the kept tile is actually gone. This also folds in the same
+      -- building_covers_tile check find_reachable_resource already applies at initial
+      -- patch selection (2026-07-24, Zdendys: "netěžit suroviny pod postavenými
+      -- budovami" -- don't mine resources under built buildings) -- a candidate
+      -- covered by a building (any type, not just mining-drill) is never picked here
+      -- either, and a KEPT tile that gets built over mid-mine (e.g. a task-pool job
+      -- places a drill on it) is dropped immediately, forcing a fresh search.
+      local res, best_d
+      local kept = q.last_res
+      if kept and kept.valid and (kept.amount or 0) > 0
+         and not building_covers_tile(surf, kept.position) then
+        local d = u.distance(c.entity.position, kept.position)
+        if d <= MINE_ADJACENT_RANGE then res, best_d = kept, d end
+      end
+      if not res then
+        -- Pick the NEAREST resource entity to the companion's ACTUAL position, not just any
+        -- entity within radius=1 of the originally-recorded q.entity_pos: a resource patch is
+        -- many individually-tiled entities ~1 tile apart, so a radius=1 query around q.entity_pos
+        -- can catch 2+ neighboring tiles, and an unsorted [1] pick can be the WRONG (slightly
+        -- farther) one -- close enough to have satisfied the "approach" exit check against
+        -- q.entity_pos, yet just over MINE_ADJACENT_RANGE from where the companion is actually
+        -- standing. Live-caught 2026-07-03: state flipped mine->find within one tick, mining_state
+        -- never even attempted (selected stayed nil), even though the companion visibly reached
+        -- and stopped right next to the coal.
+        local candidates = surf.find_entities_filtered{name = q.resource, position = q.entity_pos, radius = 2}
+        best_d = 1e18
+        for _, e in ipairs(candidates) do
+          if e.valid and (e.amount or 0) > 0 and not building_covers_tile(surf, e.position) then
+            local d = u.distance(c.entity.position, e.position)
+            if d < best_d then best_d, res = d, e end
+          end
         end
       end
       if not res then
         c.entity.mining_state = {mining = false}
         q.select_fail_ticks = nil   -- leaving "mine" -- don't let a stale count leak into the next tile
+        q.last_res = nil; q.last_res_key = nil
         q.state = "find"; return false   -- depleted -> next patch
       end
       if best_d > MINE_ADJACENT_RANGE then
         c.entity.mining_state = {mining = false}
         q.select_fail_ticks = nil
+        q.last_res = nil; q.last_res_key = nil
         q.state = "find"; return false
       end
       -- DIAGNOSTIC TRACE (2026-07-09, task #41 investigation -- purely additive, NOT a
@@ -518,6 +573,7 @@ function M.tick_gather_queues()
           q.last_res_key, res_key, best_d, game.tick), "gather_trace")
       end
       q.last_res_key = res_key
+      q.last_res = res   -- hysteresis anchor for next tick, see the HYSTERESIS comment above
       -- NATIVE mining (Zdendys 2026-07-03: "pouzit proste nativni schopnosti postavy"):
       -- setting mining_state lets the GAME ENGINE run the whole cycle -- same speed,
       -- animation, and extraction as a real player holding the mine button. No more manual
@@ -633,7 +689,7 @@ function M.tick_gather_queues()
           local just_blacklisted = {_tile_key(res.position)}
           q.blacklist[just_blacklisted[1]] = true
           q.select_fail_ticks = nil
-          q.last_res_key = nil
+          q.last_res = nil; q.last_res_key = nil
           q.state = "find"
           -- ENTITY RESPAWN TRIGGER (2026-07-11, see respawn_companion_entity's own
           -- comment above for the full evidence chain, including the same-day
