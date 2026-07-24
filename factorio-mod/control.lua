@@ -21,6 +21,14 @@ local MOD_VERSION = script.active_mods["ai-companion"] or "unknown"
 -- needed for trees.
 local CLEARABLE_ROCK_NAMES = {"big-rock", "big-sand-rock", "huge-rock"}
 
+-- WALK_TARGET_WALKABLE_RADIUS (2026-07-24, Zdendys: confirmed real gap -- fac_move_to/
+-- go_to() never validated or offset an unwalkable target (water, under a building) --
+-- see process_walking_queues' own "TARGET-WALKABILITY FIX" comment below for the full
+-- fix. A modest search radius: wide enough to rescue a target that's genuinely just a
+-- tile or two into water/a building footprint, not so wide that a badly-chosen target
+-- silently teleports the intended destination somewhere far away and unexpected.
+local WALK_TARGET_WALKABLE_RADIUS = 3
+
 local function init_storage()
   storage.companion_messages = storage.companion_messages or {}
   storage.companions = storage.companions or {}
@@ -328,6 +336,47 @@ local function process_walking_queues()
     end
     if not q.target then storage.walking_queues[cid] = nil; goto skip end
     local e = c.entity
+    -- TARGET-WALKABILITY FIX (2026-07-24, Zdendys, live discussion: confirmed real gap --
+    -- fac_move_to()/go_to() pass a requested (x,y) through completely unvalidated; a
+    -- target genuinely on water or under a building footprint gets a flat, permanent
+    -- "no path" from request_walk_path below (its own radius=2 pathfinder tolerance only
+    -- ever rescues a target that's merely NEAR unwalkable ground, not one that IS
+    -- unwalkable itself) -- with no fallback to a nearby walkable tile at all. Fixed HERE
+    -- (once per queue entry, not every tick) rather than in each of the ~7 individual
+    -- writers of storage.walking_queues (fac_move_to, queues_build's approach walk,
+    -- task_pool.lua's step-driven movement, etc. -- see fac_move_to's own
+    -- giveup_enabled comment for that full list) so the fix applies uniformly to all of
+    -- them from one place. find_non_colliding_position is the SAME primitive
+    -- find_reachable_resource (queues_gather.lua) already uses for "can the companion
+    -- stand here" checks -- if q.target is already walkable it returns (very close to)
+    -- the same position unchanged, so this is a no-op for the ordinary case.
+    -- follow_player is deliberately EXCLUDED: its own branch just above reassigns
+    -- q.target to a REAL player's own live position every tick (see that branch's own
+    -- code) -- always already valid, and re-checking every tick would be wasted work.
+    -- Gated by q.target_checked so this only runs ONCE per queue entry: confirmed (see
+    -- this fix's own research pass) every non-follow_player writer of
+    -- storage.walking_queues always allocates a FRESH table for a new destination
+    -- (never mutates an existing entry's .target in place), so a stale flag from an
+    -- earlier, different target can never survive onto a new one.
+    if not q.follow_player and not q.target_checked then
+      q.target_checked = true
+      local ok, corrected = pcall(function()
+        return e.surface.find_non_colliding_position(
+          "character", q.target, WALK_TARGET_WALKABLE_RADIUS, 0.5)
+      end)
+      if ok and corrected and u.distance(corrected, q.target) > 0.1 then
+        u.log_error(string.format(
+          "walk target (%.1f,%.1f) for companion %d was not walkable -- retargeting to "
+          .. "nearest walkable position (%.1f,%.1f)",
+          q.target.x, q.target.y, cid, corrected.x, corrected.y), "walk_target_retargeted")
+        q.target = {x = corrected.x, y = corrected.y}
+      end
+      -- else: q.target left unchanged -- either it was already walkable, or nothing
+      -- walkable exists within WALK_TARGET_WALKABLE_RADIUS; request_walk_path below
+      -- will report a genuine no-path in that case, same as before this fix existed
+      -- (no regression -- this only ever RESCUES a previously-guaranteed failure, never
+      -- introduces a new one).
+    end
     local dist = u.distance(e.position, q.target)
 
     -- Proactive reach=1 clearing (2026-07-05, Zdendys): "whenever the companion
