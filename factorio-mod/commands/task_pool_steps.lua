@@ -110,6 +110,32 @@ local function footprint_is_exclusive_resource(surf, entity_name, position, reso
   return exclusive
 end
 
+-- Does the REAL, post-snap footprint actually contain at least one tile of
+-- resource_name (2026-07-25, Zdendys live-caught via screenshot: a paired
+-- drill built on a tile with ZERO resource underneath -- "to by vubec nemelo
+-- byt mozne. Hra blokuje stavbu vrtacky tam, kde neni surovina k vytezeni. To
+-- mod nesmi obchazet!"). Factorio's can_place_entity does NOT itself enforce
+-- resource presence when called from the scripting API -- only the player-GUI
+-- placement preview does -- so nothing in the engine was actually catching
+-- this. footprint_is_exclusive_resource above only checks there's no OTHER
+-- (wrong-type) resource under the footprint -- a completely EMPTY footprint
+-- (zero resource entities of ANY type) trivially passes that check too (its
+-- own loop simply never executes), which is exactly how a straddling
+-- secondary could land on bare ground undetected. This is a genuinely
+-- SEPARATE question (presence, not exclusivity) checked as its own test-place
+-- probe against the real post-snap footprint, same technique as the function
+-- above -- not merged into it, so the already-proven primary-side exclusivity
+-- call (run_find_patch, whose own entity-based search already guarantees
+-- presence independently) is left completely untouched.
+local function footprint_has_resource(surf, entity_name, position, resource_name, force)
+  local test = surf.create_entity{name = entity_name, position = position, force = force}
+  if not test or not test.valid then return true end  -- can't test-place -> the real can_place_entity check elsewhere already rejects this candidate
+  local bb = test.bounding_box
+  local present = #surf.find_entities_filtered{area = bb, name = resource_name} > 0
+  test.destroy()
+  return present
+end
+
 -- A find_patch step never itself names the entity that will be BUILT on the tile
 -- it picks -- that only shows up in a LATER pick_orientation step, e.g.
 -- {"type":"find_patch","resource":"coal"} followed by {"type":"pick_orientation",
@@ -348,6 +374,17 @@ run_pick_orientation_checks = function(c, t, step, surf)
       local expected_resource = step.secondary_resource or find_governing_resource(t)
       if expected_resource then
         secondary_exclusive_ok = footprint_is_exclusive_resource(surf, step.secondary, {x = sx, y = sy}, expected_resource, c.entity.force)
+        -- PRESENCE gate (2026-07-25, see footprint_has_resource's own docstring):
+        -- secondary_resource_ok above already guarantees this for the furnace-
+        -- upgrade task class (step.secondary_resource explicitly set), but was
+        -- silently skipped for coal_pair/iron_drill_row/copper_drill_row-class
+        -- tasks (both sides resource-tile placements, step.secondary_resource
+        -- never set there) -- exactly the gap this closes. Only bother probing
+        -- when the exclusivity check above already passed (no point testing
+        -- presence on a candidate that's already rejected).
+        if secondary_exclusive_ok then
+          secondary_exclusive_ok = footprint_has_resource(surf, step.secondary, {x = sx, y = sy}, expected_resource, c.entity.force)
+        end
       end
     end
     if primary_ok and secondary_resource_ok and secondary_ok and secondary_exclusive_ok then
