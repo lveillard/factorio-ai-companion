@@ -29,6 +29,16 @@ local CLEARABLE_ROCK_NAMES = {"big-rock", "big-sand-rock", "huge-rock"}
 -- silently teleports the intended destination somewhere far away and unexpected.
 local WALK_TARGET_WALKABLE_RADIUS = 3
 
+-- WAYPOINT_STALL_REPATH_TICKS (2026-07-25, Zdendys: 2nd of 3 confirmed walking-
+-- obstacle gaps -- see process_walking_queues' own "RE-PATH AFTER PROLONGED
+-- WAYPOINT STALL" comment below for the full fix/derivation). 150 ticks (~2.5
+-- real seconds at normal game speed) is comfortably longer than a single
+-- bypass round (10 bypass_ticks x 5-tick sample interval = 50 ticks) -- long
+-- enough that the perpendicular bypass genuinely gets a real chance to work
+-- first, short enough that a persistently-blocked companion escalates to a
+-- full re-path within a few real seconds, not tens of seconds.
+local WAYPOINT_STALL_REPATH_TICKS = 150
+
 local function init_storage()
   storage.companion_messages = storage.companion_messages or {}
   storage.companions = storage.companions or {}
@@ -622,6 +632,24 @@ local function process_walking_queues()
         end
       end
 
+      -- WAYPOINT-STALL TRACKING (2026-07-25, robust re-path trigger -- see the
+      -- if/elseif chain below's own comment for why this replaced an earlier
+      -- attempt keyed off q.bypass_attempts): ticks since q.path_idx last
+      -- genuinely ADVANCED to a new waypoint. A direct, tamper-proof measure of
+      -- "how long stuck on THIS SPECIFIC waypoint", independent of the bypass
+      -- sub-mechanism's own internal bookkeeping.
+      if q.path and q.path_idx then
+        if q.last_path_idx ~= q.path_idx then
+          q.last_path_idx = q.path_idx
+          q.waypoint_stall_ticks = 0
+        else
+          q.waypoint_stall_ticks = (q.waypoint_stall_ticks or 0) + 5
+        end
+      else
+        q.waypoint_stall_ticks = 0
+        q.last_path_idx = nil
+      end
+
       -- Stuck detection: compare position to previous call
       local prev = q.prev_pos
       local moved = prev and u.distance(prev, e.position) or 1
@@ -677,7 +705,64 @@ local function process_walking_queues()
 
       local dir_to_target = u.get_direction(e.position, goal)
 
-      if (q.bypass_ticks or 0) > 0 then
+      if (q.waypoint_stall_ticks or 0) >= WAYPOINT_STALL_REPATH_TICKS and q.path then
+        -- RE-PATH AFTER PROLONGED WAYPOINT STALL (2026-07-25, Zdendys: 2nd of 3
+        -- confirmed walking-obstacle gaps -- a NEW obstacle appearing mid-route,
+        -- after a path was already computed, was never re-routed around; only
+        -- the perpendicular bypass below ever reacted, and the OLD code had NO
+        -- escalation once bypass alone couldn't solve it -- blind straight-line
+        -- movement toward the SAME blocked waypoint, forever, repeating the
+        -- identical failed step every cycle with no further recovery until the
+        -- OUTER fast-giveup mechanism eventually gave up entirely (600 active
+        -- ticks of near-zero net displacement, further below).
+        --
+        -- FIRST ATTEMPT at this fix (kept as a reminder, same "verify live, not
+        -- statically" lesson as several other fixes this project has caught the
+        -- same way) keyed the trigger off `q.bypass_attempts >= 4` (the bypass
+        -- mechanism's own documented 4-attempt cap) -- live-caught via a
+        -- dedicated debug command (fac_debug_walk_state) that bypass_attempts
+        -- almost never actually reaches 4 against a wide, genuinely-blocking
+        -- obstacle: q.stuck_ticks resets to 0 the MOMENT each bypass round
+        -- starts (by that branch's own pre-existing design, so a fresh stuck
+        -- period can be measured post-bypass), and the bypass's own tail-end
+        -- residual motion can satisfy "moved>=0.3" for more than the single
+        -- sample q.bypass_just_ended suppresses -- letting the stuck-detection
+        -- block's own "assume genuinely unstuck" reset (above) wipe
+        -- bypass_attempts back to nil before it ever re-accumulates to 4, even
+        -- though no REAL progress (reaching a NEW waypoint) ever happened.
+        -- Replaced with waypoint_stall_ticks (tracked just above this chain):
+        -- directly measures the thing that actually matters -- how long has
+        -- q.path_idx failed to advance -- and cannot be reset by the bypass
+        -- sub-mechanism's own internal churn, regardless of how that behaves.
+        --
+        -- Clearing q.path/q.path_idx makes the request_walk_path gate above
+        -- (`not q.path and not q.path_pending`) fire again next cycle --
+        -- Factorio's own pathfinder always plans against CURRENT, live
+        -- collision state, so it naturally routes around whatever NEW obstacle
+        -- now blocks the old route; no explicit blacklist of the blocked
+        -- waypoint is needed. All stuck/bypass/stall state is reset for a
+        -- clean slate once the new route arrives. Deliberately no separate
+        -- retry-count cap added here: the EXISTING outer fast-giveup mechanism
+        -- already bounds the worst case if repeated stall/re-path cycles
+        -- genuinely never make progress (a persistent, unroutable obstacle
+        -- still correctly ends in "unreachable"/"approx_arrived" after 600
+        -- active ticks, same as before this fix -- just via more attempts at
+        -- ACTUALLY escaping first, not fewer).
+        u.log_error(string.format(
+          "walking path for companion %d stalled on the same waypoint for %d "
+          .. "ticks -- requesting a fresh path around the current obstacle "
+          .. "instead of repeating the same blocked step", cid,
+          q.waypoint_stall_ticks), "walk_path_repath_after_stuck")
+        q.path = nil
+        q.path_idx = nil
+        q.last_path_idx = nil
+        q.waypoint_stall_ticks = 0
+        q.stuck_ticks = 0
+        q.bypass_attempts = nil
+        q.bypass_side = nil
+        q.bypass_ticks = 0
+        e.walking_state = {walking = false}
+      elseif (q.bypass_ticks or 0) > 0 then
         -- Continue bypass: walk perpendicular to unblock
         if q.bypass_dir then
           e.walking_state = {walking = true, direction = q.bypass_dir}

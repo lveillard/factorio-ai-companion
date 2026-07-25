@@ -168,6 +168,35 @@ commands.add_command("fac_debug_rare_symptom_save", nil, function(cmd)
   end)
 end)
 
+-- fac_debug_walk_state (2026-07-25, walking-obstacle re-path fix, live verification):
+-- storage.walking_queues[id] is NOT readable from a bare RCON /c command (that runs
+-- in the LEVEL's own separate script context, not this mod's real per-mod storage --
+-- live-caught while testing the target-walkability fix a few commits ago) -- this is
+-- the same "genuine test/debug entry point, require()'d module needed" pattern as
+-- fac_debug_rare_symptom_save immediately above. Dumps exactly the fields the
+-- stuck/bypass/re-path state machine (process_walking_queues, control.lua) actually
+-- tracks, for live-diagnosing exactly this class of issue without guessing.
+commands.add_command("fac_debug_walk_state", nil, function(cmd)
+  u.safe_command(function()
+    local id = tonumber(cmd.parameter)
+    if not id then u.error_response("Usage: fac_debug_walk_state <id>"); return end
+    local q = storage.walking_queues and storage.walking_queues[id]
+    if not q then u.json_response({id = id, active = false}); return end
+    u.json_response({
+      id = id, active = true,
+      target = q.target, has_path = q.path ~= nil,
+      path_idx = q.path_idx, path_len = q.path and #q.path or nil,
+      path_pending = q.path_pending or false,
+      stuck_ticks = q.stuck_ticks or 0,
+      bypass_ticks = q.bypass_ticks or 0,
+      bypass_attempts = q.bypass_attempts or 0,
+      bypass_side = q.bypass_side,
+      waypoint_stall_ticks = q.waypoint_stall_ticks or 0,
+      active_ticks = q.active_ticks,
+    })
+  end)
+end)
+
 commands.add_command("fac_companion_position", nil, function(cmd)
   u.safe_command(function()
     local id, c = u.find_companion(cmd.parameter)
