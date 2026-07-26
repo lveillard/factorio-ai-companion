@@ -59,6 +59,30 @@ local function init_storage()
   -- companion.py's wait_arrive() sees this for FREE on its own already-happening
   -- position poll -- no new RCON round-trip.
   storage.walk_last_outcome = storage.walk_last_outcome or {}
+  -- walk_last_arrived (2026-07-26, Zdendys's direct request to stop deferring the
+  -- narrow-gap/bootstrap-furnace stall and actually fix it -- see
+  -- rare_coal_pair_narrow_gap_stall_2026_07_25.md for the full investigation this
+  -- closes): process_walking_queues' own "dist < 2" arrival check (below) clears
+  -- storage.walking_queues[cid] the instant it's satisfied, with NO trace left
+  -- behind of what q.target actually was. companion.lua's fac_companion_position
+  -- exposes q.target as "walk_target" so companion.py's wait_arrive() can accept
+  -- arrival relative to a walkability-CORRECTED target, not just the caller's raw
+  -- (possibly-inside-a-building's-footprint) one -- but that only works while the
+  -- queue still exists. If the mod's own tighter <2 threshold is satisfied before
+  -- Python's next poll (a real race: this function runs every tick, Python polls
+  -- every 50ms = many ticks at game.speed>1), Python's poll sees walking_queues[id]
+  -- already nil, walk_target comes back nil too, and it permanently loses the
+  -- corrected point -- stuck comparing only the raw target forever, even though
+  -- the companion is already standing within 2 tiles of a DIFFERENT (corrected)
+  -- point and will never walk any closer. Confirmed live via the new mid-wait
+  -- walk_state sampling (companion.py, same session): active:false from the very
+  -- first sample of an affected wait, proving the queue was gone from the start,
+  -- not cleared partway through. This one-shot-per-arrival (but NOT consumed --
+  -- see the read side, commands/companion.lua -- deliberately left readable across
+  -- multiple polls, unlike walk_last_outcome, since it's not a failure notification
+  -- that could be misread as fresh) stash closes the race: Python can now recover
+  -- the corrected target even after the queue is gone.
+  storage.walk_last_arrived = storage.walk_last_arrived or {}
   queues.init()
   task_pool.init()
 end
@@ -459,7 +483,15 @@ local function process_walking_queues()
 
     if dist < 2 then
       e.walking_state = {walking = false}
-      if not q.follow_player then storage.walking_queues[cid] = nil end
+      if not q.follow_player then
+        -- Stash BEFORE nilling (2026-07-26, see init_storage's own comment on
+        -- storage.walk_last_arrived for the full race this closes) -- q.target
+        -- here is already the walkability-CORRECTED point (target_checked ran
+        -- earlier this same tick pass, at the top of this function), exactly
+        -- what a caller polling immediately after this clears needs to recover.
+        storage.walk_last_arrived[cid] = {x = q.target.x, y = q.target.y, tick = game.tick}
+        storage.walking_queues[cid] = nil
+      end
       q.stuck_ticks = 0
       q.bypass_ticks = 0
     else

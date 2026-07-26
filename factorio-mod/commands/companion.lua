@@ -216,7 +216,41 @@ commands.add_command("fac_companion_position", nil, function(cmd)
     -- Python's wait_arrive() already calls every ~1-2s while blocking on movement -- now
     -- also surfaces whatever OTHER async jobs (mine/build/craft/...) are still in flight
     -- for this same companion, for free, no extra RCON round-trip needed to discover it.
-    u.json_response({id = id, position = {x = math.floor(pos.x * 10) / 10, y = math.floor(pos.y * 10) / 10}, nearby = summary, players = players}, id)
+    --
+    -- walk_target (2026-07-25, Zdendys's own "stop server, work through everything"
+    -- directive -- found live via the discard-pause investigation mechanism during a
+    -- recording run): control.lua's TARGET-WALKABILITY fix (2026-07-24,
+    -- WALK_TARGET_WALKABLE_RADIUS) silently CORRECTS an unwalkable q.target (e.g. a
+    -- servicing call's own go_to(dx,dy,dist=2.2) where (dx,dy) is a drill/furnace's
+    -- own exact placed position -- always "inside a building's footprint" by
+    -- definition) to the nearest walkable tile, up to 3 tiles away. wait_arrive()
+    -- (companion.py) polls distance against the ORIGINAL (dx,dy) with the CALLER's
+    -- own `dist` (often 2.2) -- it has no idea the mod silently walked her to a
+    -- DIFFERENT point instead. Live-confirmed: this produced repeated, intermittent
+    -- "could not reach X -- skipping this visit" failures across EVERY servicing
+    -- dispatch in one recording episode (stone/iron/copper drill+furnace, all
+    -- retargeted 0.7-1.4 tiles from their own exact position) -- sometimes still
+    -- landing within the caller's dist by chance, sometimes not, matching the
+    -- "sometimes works, sometimes doesn't" pattern observed live. Exposing the
+    -- CURRENT (possibly-corrected) walk target here lets wait_arrive() also accept
+    -- arrival relative to what the mod is ACTUALLY walking her to, not just the
+    -- stale original -- see companion.py's wait_arrive() for the consuming side.
+    local wq = storage.walking_queues[id]
+    local walk_target = (wq and wq.target) and {x = wq.target.x, y = wq.target.y} or nil
+    -- walk_last_arrived fallback (2026-07-26, see control.lua's init_storage
+    -- comment on storage.walk_last_arrived for the full race this closes): the
+    -- live queue can be gone (walk_target nil above) NOT because no walk ever
+    -- happened, but because process_walking_queues' own dist<2 arrival check
+    -- already cleared it moments ago -- still expose that corrected point so
+    -- wait_arrive() (companion.py) can accept arrival relative to it, closing
+    -- the exact race a live mid-wait diagnostic (companion.py, same session)
+    -- proved was happening (active:false from the very first poll of an
+    -- affected wait).
+    if not walk_target and storage.walk_last_arrived[id] then
+      local la = storage.walk_last_arrived[id]
+      walk_target = {x = la.x, y = la.y}
+    end
+    u.json_response({id = id, position = {x = math.floor(pos.x * 10) / 10, y = math.floor(pos.y * 10) / 10}, nearby = summary, players = players, walk_target = walk_target}, id)
   end)
 end)
 
