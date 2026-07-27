@@ -52,7 +52,22 @@ commands.add_command("fac_building_place", nil, function(cmd)
          and c.entity.position.y >= area[1].y and c.entity.position.y <= area[2].y then
         u.json_response({id = id, error = "companion on build site -- move off first"}); return
       end
-      if not can_here() then   -- only clear when something actually blocks placement
+      -- CLEAR RETRY LOOP (2026-07-27, live-caught via a discard-investigation-pause:
+      -- an iron output-inserter's own chest kept failing "Cannot place" at candidates
+      -- immediately next to the SAME furnace this task is trying to give an output tap
+      -- to -- confirmed live via RCON that a lying item-entity (iron-plate x1) sat
+      -- almost exactly on the target tile every time. Root cause: this furnace's
+      -- OWN output has nowhere to go yet (that IS the output-inserter this task is
+      -- building) and has been overflowing/spilling loose plates onto the ground
+      -- around itself for a while -- a single clear-then-check pass can lose a race
+      -- against continued spillage (a new item can land in the exact same spot again
+      -- between the pick-up loop and the final can_place_entity check, since the
+      -- furnace keeps overflowing every tick it isn't collected). Retrying the whole
+      -- clear+check cycle a few times (bounded, cheap -- no sleep, just repeated
+      -- server-tick-instant checks) rides out a few ticks of continued overflow
+      -- instead of giving up after the very first attempt.
+      for _clear_attempt = 1, 3 do
+        if can_here() then break end   -- only clear when something actually blocks placement
         -- lying items: pick up the ACTUAL stack (preserves quality/count); keep if inv full
         for _, it in ipairs(surf.find_entities_filtered{area = area, type = "item-entity"}) do
           if it.valid and it.stack and it.stack.valid_for_read then
