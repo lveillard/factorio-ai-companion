@@ -394,6 +394,13 @@ function M.tick()
             -- pushing its own need, crashing every tick forever (active_step never
             -- cleared -> companion deadlocked for the rest of the episode).
             t.ctx.ensure_stack = nil
+            -- Clear alongside ensure_stack (2026-07-27, same "shared across ALL
+            -- steps of this task" reasoning as the comment above): without this,
+            -- a stale expired deadline from an EARLIER ensure_item step could make
+            -- a LATER step needing the SAME item name skip its own fresh 30s wait
+            -- window entirely (see task_pool_ensure_item.lua's own SMELT_WAIT_TICKS
+            -- docstring).
+            t.ctx.smelt_wait_deadline = nil
             t.cursor = t.cursor + 1
             storage.active_step[cid] = nil
             if t.cursor > #t.steps then ledger.complete_task(active.task_id) end
@@ -405,6 +412,12 @@ function M.tick()
         elseif kind == "push" then
           -- A deeper ingredient need was pushed -- reassess next tick against the
           -- new top of stack, same as "satisfied"'s implicit re-entry above.
+        elseif kind == "wait" then
+          -- Waiting on an already-running furnace to top up a smelted ingredient
+          -- (2026-07-27, see task_pool_ensure_item.lua's own SMELT_WAIT_TICKS
+          -- docstring) -- no state change, same as "push": reassess next tick
+          -- until either the stock arrives (kind flips to "satisfied") or the
+          -- bounded wait deadline passes (kind flips to a genuine failure).
         elseif kind == "gather" or kind == "craft" then
           active.state = "ensuring"
           active.ensuring_kind = kind

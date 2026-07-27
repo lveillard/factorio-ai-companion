@@ -44,6 +44,26 @@ local ENSURE_ITEM_GATHER_MAX_ATTEMPTS = 5
 -- already-tuned distance for "container sitting right next to whatever the
 -- companion is currently doing", not a new guess.
 local ENSURE_ITEM_CONTAINER_SEARCH_RADIUS = 5
+-- SMELT_WAIT_TICKS (2026-07-27, Zdendys's own direct correction: "Companion neumi
+-- tavit za pochodu -- od toho jsou pece! Z materialu umi companion vyrabet dily a
+-- jednodussi budovy (vrtacky, pece, pasy, podavace atd.)" -- "The companion isn't
+-- supposed to smelt on the fly, that's what furnaces are for! From materials the
+-- companion CAN craft parts and simpler buildings (drills, furnaces, belts,
+-- feeders etc.)"). The non-hand-craftable fail-fast below (2026-07-16) was and
+-- remains CORRECT that the companion must never attempt to smelt -- but failing
+-- the WHOLE task outright the very first time a smelted ingredient (iron-plate/
+-- copper-plate) is short conflates "I can't produce this myself" with "nothing
+-- else is producing it either". By the time these real failures were observed
+-- live this session (coal_pair_upgrade, iron_drill_row, build_ore_drill_row_
+-- unit_steps), the base drill+furnace pairs were already BUILT and running --
+-- an already-fueled furnace keeps smelting on its own regardless of this task,
+-- so a short-lived wait gives it a real chance to top up the stock before this
+-- task gives up. 14400 ticks (30 real seconds at this project's game.speed=8) is
+-- comfortably longer than a running furnace needs to produce far more than any
+-- of these small crafts require (a stone-furnace smelts 1 plate per ~3.2 GAME
+-- seconds = ~0.4 REAL seconds at speed=8) while still being a bounded, honest
+-- wait -- not a silent infinite stall if genuinely no furnace exists yet.
+local SMELT_WAIT_TICKS = 14400
 
 -- Real Factorio recipe data for `item`, or nil if `item` has no recipe at all
 -- (every raw/minable resource -- ore, coal, stone, wood -- has zero recipe
@@ -229,14 +249,30 @@ function M.start_ensure_item_action(c, cid, t)
     return "gather"
   end
   if not recipe.hand_craftable then
-    -- Fail fast, exactly like ensure_item's own Python-side hand-craftable check
-    -- (2026-07-16 adversarial-review finding, spatial_demo.py): a smelting recipe
-    -- (iron-plate/copper-plate/...) has ingredients but the character can never
-    -- craft it directly no matter how many ingredients it holds -- attempting
-    -- start_craft would just fail with "Missing ingredients" via
-    -- get_craftable_count, a misleadingly generic error for a call that could
-    -- NEVER have succeeded.
-    return nil, need.item .. " recipe is not hand-craftable (needs a real machine, e.g. smelting)"
+    -- The companion itself NEVER attempts to smelt (2026-07-16 adversarial-review
+    -- finding, still correct) -- a smelting recipe (iron-plate/copper-plate/...)
+    -- has ingredients but the character can never craft it directly no matter how
+    -- many ingredients it holds; attempting start_craft would just fail with
+    -- "Missing ingredients" via get_craftable_count, a misleadingly generic error
+    -- for a call that could NEVER have succeeded.
+    --
+    -- WAIT first, though (2026-07-27, see SMELT_WAIT_TICKS's own docstring above):
+    -- an already-built, already-fueled furnace keeps smelting independently of
+    -- this task, so a short bounded wait gives it a real chance to top up the
+    -- stock before giving up outright. Tracks its own per-item deadline (t.ctx.
+    -- smelt_wait_deadline), set ONCE the first time this need is seen, so retries
+    -- share the SAME deadline instead of each resetting a fresh window.
+    t.ctx.smelt_wait_deadline = t.ctx.smelt_wait_deadline or {}
+    local deadline = t.ctx.smelt_wait_deadline[need.item]
+    if not deadline then
+      deadline = game.tick + SMELT_WAIT_TICKS
+      t.ctx.smelt_wait_deadline[need.item] = deadline
+    end
+    if game.tick < deadline then
+      return "wait"
+    end
+    return nil, need.item .. " recipe is not hand-craftable and no furnace produced " ..
+      "enough within " .. SMELT_WAIT_TICKS .. " ticks (needs a real machine, e.g. smelting)"
   end
   for _, ing in ipairs(recipe.ingredients) do
     local needed_amount = math.ceil(need.count / recipe.yield) * ing.amount
