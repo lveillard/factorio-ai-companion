@@ -65,20 +65,23 @@ local function find_approach_pos(surf, char_pos, build_pos)
   return {x = build_pos.x, y = build_pos.y - 5}
 end
 
--- Remove trees and small rocks from the entity's collision footprint
+-- Remove trees, small rocks, and loose items from the entity's collision footprint
 --
--- NOTE (2026-07-17, investigated then REVERTED): a live discard-investigation-pause
--- showed _build_iron_output_inserter's (belt_connect_ops.py) wooden-chest placement
--- stuck at (29,0) with "nearby: iron-ore,iron-ore,item-on-ground,burner-inserter,..."
--- and self_collision_clear=false. Hypothesized the lying item ("item-entity") was
--- the uncleared blocker (belt_connect_ops.py's _tile_has_clearable_debris pre-check
--- assumes it counts as clearable) -- but a live RCON test (surface.create_entity
--- name="item-on-ground" at a clear tile, then can_place_entity{name="wooden-chest"})
--- proved can_place_entity returns TRUE with a lying item present regardless: it is
--- NOT a collision blocker in this engine version. Reverted the item-entity handling
--- added here on that now-disproven premise (per this project's own "live
--- verification beats static review" lesson) -- the real blocker at (29,0) remains a
--- separate, still-open investigation.
+-- CORRECTION (2026-07-27, discard-investigation-pause, coal-row seed extension):
+-- the 2026-07-17 note below (now removed) concluded a lying item-entity does NOT
+-- block placement, based on a single live test with a freshly create_entity'd item
+-- at an otherwise-clear tile. That conclusion was directly DISPROVEN this pause by
+-- a live A/B test at an actual failing coordinate ((-60,25), burner-mining-drill,
+-- "Cannot place (collision)"): `can_place_entity` returned false with a real
+-- item-on-ground present, then TRUE after teleporting that exact item away (and,
+-- separately, teleporting the companion's own body away made no difference --
+-- ruling out self-collision). Matches this same session's independent
+-- collision_mask finding (item-entity shares the "item"/"is_lower_object" layers
+-- with a normal solid entity) already applied to fac_building_place (building.lua,
+-- commit c2c47db) and to _build_iron_output_inserter's proactive furnace-output
+-- drain (belt_connect_ops.py, commit 5c73768) -- this was the third, still-unfixed
+-- code path for the identical bug class: task_pool.lua's "place" step routes
+-- through queues.start_build, whose clearing state only cleared trees/rocks.
 local function clear_build_area(surf, entity_name, position, inv)
   local proto = prototypes.entity[entity_name]
   if not proto or not proto.collision_box then return end
@@ -90,6 +93,12 @@ local function clear_build_area(surf, entity_name, position, inv)
   local obstacles = surf.find_entities_filtered{area = area, type = {"tree", "simple-entity"}}
   for _, obs in ipairs(obstacles) do
     if obs.valid then obs.mine{inventory = inv} end   -- MINE (wood/stone into inventory), not free-destroy
+  end
+  for _, it in ipairs(surf.find_entities_filtered{area = area, type = "item-entity"}) do
+    if it.valid and it.stack and it.stack.valid_for_read then
+      local moved = inv.insert(it.stack)
+      if moved >= it.stack.count then it.destroy() end
+    end
   end
 end
 
@@ -286,6 +295,12 @@ function M.tick_build_queues()
                                    mirror = q.mirror} then
         q.collision_retry_deadline = q.collision_retry_deadline or (game.tick + 60)
         if game.tick < q.collision_retry_deadline then
+          -- Re-sweep the footprint on every retry tick (2026-07-27), not just once
+          -- during the earlier CLEARING state -- a dropped item can reappear on the
+          -- same tile between retries (e.g. a full-inventory mine dropping the
+          -- excess right back where it was picked up), and a passive wait alone
+          -- would never clear it before the 60-tick budget runs out.
+          clear_build_area(surf, q.entity, q.position, c.entity.get_main_inventory())
           return false
         end
         -- SELF-COLLISION STEP-AWAY (2026-07-13, universal own-body-blocks-own-build
