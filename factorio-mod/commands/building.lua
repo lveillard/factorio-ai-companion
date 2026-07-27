@@ -185,7 +185,18 @@ commands.add_command("fac_building_fuel", nil, function(cmd)
     local inv = c.entity.get_inventory(defines.inventory.character_main)
     local have = inv.get_item_count(fuel)
     if have == 0 then u.json_response({id = id, error = "No " .. fuel}); return end
-    local es = c.entity.surface.find_entities_filtered{position = c.entity.position, radius = 3, type = {"furnace", "boiler", "burner-inserter", "car", "locomotive", "mining-drill"}}
+    -- radius 3->6 (2026-07-27, Zdendys: "oprav to hlaseni!" after "drill fuel failed
+    -- (No burner nearby)" kept recurring even right after a successful go_to() to the
+    -- drill): this search is centered on the COMPANION's position, but go_to()'s own
+    -- "arrived" is looser than that -- WALK_TARGET_WALKABLE_RADIUS (control.lua) can
+    -- retarget the walk target up to 3 tiles away from an unwalkable drill-center
+    -- position (which every drill's own build position always is), and normal arrival
+    -- itself only requires dist<2 from that (possibly already-corrected) target. So the
+    -- companion can legitimately end up ~5 tiles from the drill entity it just
+    -- "successfully" walked to, well past the old radius=3. Widened to 6 to cover that
+    -- common case; fueling any other genuinely-nearby burner this catches is harmless
+    -- by design (see the "fuel EVERY nearby burner" comment below).
+    local es = c.entity.surface.find_entities_filtered{position = c.entity.position, radius = 6, type = {"furnace", "boiler", "burner-inserter", "car", "locomotive", "mining-drill"}}
     if #es == 0 then u.json_response({id = id, error = "No burner nearby"}); return end
     -- Fuel EVERY nearby burner (not just es[1], whose order is arbitrary): in a tight
     -- furnace row, fueling only the first leaves the others starved -> they stop smelting
