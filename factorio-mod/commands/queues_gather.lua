@@ -48,6 +48,32 @@ local M = {}
 -- pinned down; see scripts/test_gather_select_fail.py's docstring for the full status.
 local SELECT_FAIL_TICKS = 120
 
+-- MINE_STUCK_TICKS (2026-07-27, live-caught RE-CONFIRMATION of this file's own
+-- 2026-07-11 "KNOWN LIMITATION" documented above SELECT_FAIL_TICKS: "a live repro...
+-- also caught a SECOND, structurally different failure where selected sticks
+-- correctly and mining_state.mining stays true continuously for 2500+ ticks at a
+-- fine distance, yet gathered stays 0 the whole time -- this guard does nothing
+-- there (selected == res, so the branch below never fires)... Root cause of both
+-- NOT yet pinned down". Live-caught again today, gathering coal: companion only
+-- ~1.1 tiles from the target entity (well within MINE_ADJACENT_RANGE), stuck in
+-- "mine" state with ZERO inventory/position change for 605 ticks -- past every
+-- existing self-heal in this function (SELECT_FAIL_TICKS never fired, meaning
+-- selection genuinely stuck) -- until process_queue's own generic
+-- UNIVERSAL_STALE_TICKS=600 backstop force-stopped the WHOLE gather queue,
+-- which the caller (resource_search.acquire()/reactive_loop_ops.py's own
+-- no-progress guard) escalated into a full EPISODE ABORT.
+--
+-- This constant does NOT attempt to root-cause the underlying engine mystery
+-- (multiple dedicated past investigation rounds already tried and left it open
+-- by deliberate choice, see the STATUS comment below) -- it is a SYMPTOM-level
+-- mitigation, mirroring this file's own already-proven select-fail recovery
+-- (blacklist this one tile, try the next candidate) but triggered by lack of
+-- PRODUCT progress instead of lack of selection. Set safely below
+-- UNIVERSAL_STALE_TICKS=600 so this queue-local, single-tile recovery fires
+-- BEFORE the generic backstop would tear down the whole queue (and hence abort
+-- the episode) over what turns out to be one bad candidate.
+local MINE_STUCK_TICKS = 300
+
 -- DIAGNOSTIC (2026-07-11, Mode A/B gather-select-fail investigation -- see
 -- scripts/live_investigate_mode_b.py, scripts/live_investigate_selected_distance.py,
 -- scripts/live_investigate_mode_a_preposition.py, scripts/live_investigate_mode_a_
@@ -471,9 +497,25 @@ function M.tick_gather_queues()
     end
 
     if q.state == "mine" then
-      if inv.get_item_count(q.product) - (q.start_count or 0) >= q.target then
+      local gathered = inv.get_item_count(q.product) - (q.start_count or 0)
+      if gathered >= q.target then
         c.entity.mining_state = {mining = false}
         q.state = "done"; return false   -- target met
+      end
+      -- MINE_STUCK_TICKS bookkeeping (2026-07-27, see that constant's own docstring):
+      -- tracks ticks spent in "mine" state with NO actual product gain -- reset the
+      -- instant `gathered` actually increases (real progress happened). Deliberately
+      -- NOT reset on a candidate/tile switch (e.g. a select-fail blacklist moving to
+      -- the next tile): this mirrors process_queue's own generic UNIVERSAL_STALE_TICKS
+      -- backstop, which is likewise scoped to the WHOLE queue's total inactivity, not
+      -- any one candidate -- a gather() call that keeps switching candidates while
+      -- NEVER actually gaining product is exactly the case this guard exists to catch.
+      if q.mine_gathered_at_entry == nil or gathered ~= q.mine_gathered_at_entry then
+        q.mine_gathered_at_entry = gathered
+        q.mine_stuck_ticks = 0
+        q.mine_stuck_streak = 0   -- real progress -- any prior stuck-escalation streak no longer matters
+      else
+        q.mine_stuck_ticks = (q.mine_stuck_ticks or 0) + TICK_INTERVAL
       end
       -- DIAGNOSTIC (Mode A/B gather-select-fail investigation, see MINE_DIAG_CAP comment above): fresh
       -- read BEFORE this cycle's own logic touches anything, so a sample can reveal
@@ -740,6 +782,45 @@ function M.tick_gather_queues()
       q.select_fail_streak = 0
       if not c.entity.mining_state.mining then
         c.entity.mining_state = {mining = true, position = res.position}
+      end
+      -- MINE_STUCK_TICKS escalation (2026-07-27, see that constant's own docstring):
+      -- reached ONLY once selection is confirmed fine (selected==res, this whole
+      -- branch) -- so this is exactly the "selected sticks, mining_state.mining
+      -- stays true, gathered never advances" mystery this file's own 2026-07-11
+      -- comment already flagged as a KNOWN, not-yet-root-caused limitation. Escalate
+      -- the SAME way the select-fail path above does (blacklist this one tile, try
+      -- the next candidate) rather than let process_queue's generic
+      -- UNIVERSAL_STALE_TICKS=600 backstop kill the whole queue/episode over it.
+      if q.mine_stuck_ticks > MINE_STUCK_TICKS then
+        u.log_error(string.format(
+          "gather mine-state: %s at %s selected+mining but gathered=%d for %d ticks " ..
+          "(target=%d, best_d=%.2f) -- blacklisting, trying next patch (MINE_STUCK_TICKS)",
+          q.resource, res_key, gathered, q.mine_stuck_ticks, q.target, best_d), "gather_queue")
+        c.entity.mining_state = {mining = false}
+        q.blacklist = q.blacklist or {}
+        local just_blacklisted = {_tile_key(res.position)}
+        q.blacklist[just_blacklisted[1]] = true
+        q.mine_stuck_ticks = 0
+        q.mine_gathered_at_entry = nil
+        q.last_res = nil; q.last_res_key = nil
+        q.state = "find"
+        -- Separate streak counter from select_fail_streak (2026-07-27): that field is
+        -- unconditionally reset to 0 a few lines above, every tick selection succeeds
+        -- -- including this one -- so reusing it here would never accumulate across
+        -- repeated stuck-escalations. SELECT_FAIL_RESPAWN_STREAK=1 reused as the same
+        -- threshold, same reasoning as the sibling mechanism: one full stuck-episode is
+        -- already a reliable signal.
+        q.mine_stuck_streak = (q.mine_stuck_streak or 0) + 1
+        if q.mine_stuck_streak >= SELECT_FAIL_RESPAWN_STREAK then
+          if respawn_companion_entity(cid, c) then
+            for _, key in ipairs(just_blacklisted) do
+              q.blacklist[key] = nil
+            end
+            inv = c.entity.get_main_inventory()
+          end
+          q.mine_stuck_streak = 0
+        end
+        return false
       end
       _record_mine_diag(cid, {
         t = game.tick, st = "mine", r = res_key, d = best_d,
