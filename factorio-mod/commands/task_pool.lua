@@ -475,13 +475,25 @@ function M.tick()
         if have == 0 then
           ok, err = false, "no " .. step.item .. " in inventory"
         else
+          -- TYPE-FILTER BUG (2026-07-28, live-caught: belt-row-tap iron-output-
+          -- inserter refuel stuck at "still starved" for 790+ consecutive cycles
+          -- despite "topped up unit" logging success every time): "burner-inserter"
+          -- is an entity NAME, not a `type` -- Factorio 2.0's real `type` value for
+          -- every inserter (burner/fast/long-handed/etc) is "inserter". Using the
+          -- name here in a `type=` filter matched ZERO inserters, always, silently
+          -- -- live-reproduced via RCON: the identical query at the iron-output-
+          -- inserter's own position (radius=3) returned only nearby furnaces/drills,
+          -- never the inserter itself even at distance 0. Fixed to the real type;
+          -- the `if fi then` check right below already skips non-burner inserters
+          -- (no fuel_inventory), so widening to all "inserter"-type entities is safe.
           local es = c.entity.surface.find_entities_filtered{
             position = pos, radius = FUEL_REACH,
-            type = {"furnace", "boiler", "burner-inserter", "mining-drill"}}
+            type = {"furnace", "boiler", "inserter", "mining-drill"}}
           if #es == 0 then
             ok, err = false, "no burner near target"
           else
             local remaining = step.count or 1
+            local delivered = 0
             for _, e in ipairs(es) do
               if remaining <= 0 then break end
               local fi = e.get_fuel_inventory()
@@ -492,8 +504,19 @@ function M.tick()
                   c.entity.remove_item({name = step.item, count = inserted})
                   remaining = remaining - inserted
                   have = have - inserted
+                  delivered = delivered + inserted
                 end
               end
+            end
+            -- FALSE-SUCCESS BUG (2026-07-28, same live incident): `ok` was never
+            -- set in this branch once `es` was non-empty, so a cycle where every
+            -- nearby burner already had a full fuel inventory (confirmed live: all
+            -- 4 furnaces/drills sat at fuel=50/50 the whole stall) silently
+            -- "succeeded" with delivered=0 -- the caller (_build_coal_row_refuel,
+            -- belt_connect_ops.py) logged "topped up unit" every single attempt
+            -- while the real fuel count never moved, hiding the failure completely.
+            if delivered == 0 then
+              ok, err = false, "no burner nearby had room for " .. step.item
             end
           end
         end

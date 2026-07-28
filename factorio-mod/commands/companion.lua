@@ -307,7 +307,15 @@ commands.add_command("fac_companion_inventory", nil, function(cmd)
         items[#items + 1] = {name = item.name, count = item.count, quality = item.quality}
       end
       table.sort(items, function(a, b) return a.count > b.count end)
-      u.json_response({id = id, items = items, slots = #inv, used = #items})
+      -- empty_stacks (2026-07-28, live-caught: a simultaneous iron+copper collect
+      -- stall, both giving up hundreds of cycles in a row, was root-caused to the
+      -- companion's OWN inventory having no room left for another plate -- but
+      -- `used = #items` above counts DISTINCT item TYPES, not occupied STACKS, so
+      -- e.g. copper-plate:2800 (28 full stacks) counts as used=1 there, making
+      -- "used >= slots" useless for detecting this. count_empty_stacks() is the
+      -- real, stack-aware signal LuaInventory provides for "is there room left".
+      u.json_response({id = id, items = items, slots = #inv, used = #items,
+                        empty_stacks = inv.count_empty_stacks()})
     end
   end)
 end)
