@@ -489,6 +489,27 @@ function M.tick()
           local es = c.entity.surface.find_entities_filtered{
             position = pos, radius = FUEL_REACH,
             type = {"furnace", "boiler", "inserter", "mining-drill"}}
+          -- NEAREST-FIRST BUG (2026-07-28, live-caught during coal-row-refuel discard-
+          -- pause investigation, episode 69): find_entities_filtered's return order is
+          -- NOT distance-sorted (engine-internal order, observed live: a burner-inserter
+          -- 1.58 tiles away was returned BEFORE the actual target burner-mining-drill
+          -- sitting AT `pos`, distance 0). The delivery loop below spends `remaining`
+          -- (the whole step.count budget) on whichever entity it reaches FIRST -- live-
+          -- confirmed at (-55,-7): every refuel call handed its entire 10-coal budget to
+          -- the row's own local fuel-inserter (room for 45 more, so it absorbed all 10
+          -- every time) and the drill AT the query position never received any, despite
+          -- the caller (_build_coal_row_refuel, belt_connect_ops.py) walking the
+          -- companion to the drill's own exact position and issuing the fuel step
+          -- targeted there -- 29+ consecutive low-fuel reads on the drill while its own
+          -- neighbor inserter looked "fed". Same root class the mod's OTHER fuel queue
+          -- (queues_fuel.lua's find_next_burner) already guards against via its own
+          -- explicit table.sort by distance -- this step never got that same sort.
+          -- Sorting nearest-to-`pos` first guarantees the entity the caller actually
+          -- meant to target gets first claim on the budget; any leftover still spills
+          -- over to a genuinely-nearby neighbor exactly as before.
+          table.sort(es, function(a, b)
+            return u.distance(a.position, pos) < u.distance(b.position, pos)
+          end)
           if #es == 0 then
             ok, err = false, "no burner near target"
           else
