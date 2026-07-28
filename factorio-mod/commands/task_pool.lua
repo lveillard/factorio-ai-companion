@@ -472,7 +472,27 @@ function M.tick()
         local pos = step_target_pos(t, step)
         local inv = c.entity.get_main_inventory()
         local have = inv.get_item_count(step.item)
-        if have == 0 then
+        -- NIL-POS CRASH (2026-07-28, live-caught: this exact step permanently wedged
+        -- storage.active_step[cid] for the rest of a live episode -- `pos` reaching
+        -- here nil, then flowing unguarded into the table.sort comparator added by
+        -- THIS SAME NIGHT's nearest-first fix a few hours earlier, crashed every ~5
+        -- ticks forever with "attempt to index local 'b' (a nil value)" inside
+        -- init.lua's M.distance -- the crash happened BEFORE ok/err was ever
+        -- assigned, so the cursor-advance/active_step-release cleanup below never
+        -- ran, and go_to()/move_to() (companion.py) reject EVERY subsequent walk
+        -- request while active_step[cid] stays set -- explaining why "could not
+        -- reach drill" then appeared at many UNRELATED iron/copper positions: the
+        -- failure had nothing to do with any specific target, the companion was
+        -- simply locked. step_target_pos() legitimately returns nil (see its own
+        -- docstring, task_pool_targeting.lua) whenever a step's ctx position isn't
+        -- resolved yet -- pick_next() (this file, ~line 190) already guards this
+        -- exact case (`pos and u.distance(...) or 0`); this step never got the same
+        -- guard. Fail the step cleanly instead of touching pos at all -- matches
+        -- this function's own established "ok, err = false, ..." convention used
+        -- for every other unresolvable-step case just below.
+        if not pos then
+          ok, err = false, "fuel: no target position resolved"
+        elseif have == 0 then
           ok, err = false, "no " .. step.item .. " in inventory"
         else
           -- TYPE-FILTER BUG (2026-07-28, live-caught: belt-row-tap iron-output-
