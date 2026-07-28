@@ -401,6 +401,15 @@ function M.tick()
             -- window entirely (see task_pool_ensure_item.lua's own SMELT_WAIT_TICKS
             -- docstring).
             t.ctx.smelt_wait_deadline = nil
+            -- step_ticks (2026-07-28, action-timing instrumentation): recorded at
+            -- every cursor advance, keyed by the PRE-increment cursor (the step
+            -- that just finished) -- active.step_start_tick was stamped once when
+            -- this step first entered active_step (see the 2 creation sites below),
+            -- and survives the walking->acting sub-state transition untouched, so
+            -- this captures the full wall-to-wall duration, not just the final
+            -- sub-phase.
+            t.step_ticks = t.step_ticks or {}
+            t.step_ticks[t.cursor] = {type = step.type, start = active.step_start_tick, done = game.tick}
             t.cursor = t.cursor + 1
             storage.active_step[cid] = nil
             if t.cursor > #t.steps then ledger.complete_task(active.task_id) end
@@ -510,6 +519,10 @@ function M.tick()
       -- resolved here.
       if step.type ~= "place" and step.type ~= "ensure_item" then
         if ok then
+          -- step_ticks: see the "ensure_item" cursor-advance site above for the
+          -- full rationale (same capture, same pre-increment cursor key).
+          t.step_ticks = t.step_ticks or {}
+          t.step_ticks[t.cursor] = {type = step.type, start = active.step_start_tick, done = game.tick}
           t.cursor = t.cursor + 1
           storage.active_step[cid] = nil
           if t.cursor > #t.steps then ledger.complete_task(active.task_id) end
@@ -542,6 +555,10 @@ function M.tick()
         elseif step.which == "secondary" and st.position then
           t.ctx.sx, t.ctx.sy = st.position.x, st.position.y
         end
+        -- step_ticks: see the "ensure_item" cursor-advance site (near line 404) for
+        -- the full rationale. This is the "place" step's own completion point.
+        t.step_ticks = t.step_ticks or {}
+        t.step_ticks[t.cursor] = {type = step.type, start = active.step_start_tick, done = game.tick}
         t.cursor = t.cursor + 1
         storage.active_step[cid] = nil
         if t.cursor > #t.steps then ledger.complete_task(active.task_id) end
@@ -668,10 +685,18 @@ function M.tick()
           -- tick_gather_queues' own q.approach_deadline (25 ticks/tile, floor 1800)
           -- for consistency with the rest of the codebase's convention.
           local walk_deadline = u.approach_deadline(c.entity.position, pos)
+          -- step_start_tick (2026-07-28, action-timing instrumentation): stamped
+          -- once here, when the step FIRST enters active_step -- covers the
+          -- walking phase too, so the eventual step_ticks entry (see M.tick's own
+          -- cursor-advance sites) reflects the full wall-to-wall duration, not
+          -- just the "acting" sub-phase. Never reset by the later
+          -- walking->acting transition (M.tick just flips active.state in place).
           storage.active_step[cid] = {task_id = task_id, state = "walking",
-                                       approach_deadline = walk_deadline}
+                                       approach_deadline = walk_deadline,
+                                       step_start_tick = game.tick}
         else
-          storage.active_step[cid] = {task_id = task_id, state = "acting"}
+          storage.active_step[cid] = {task_id = task_id, state = "acting",
+                                       step_start_tick = game.tick}
         end
       end
     end

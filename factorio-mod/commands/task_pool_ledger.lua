@@ -82,6 +82,11 @@ local function fail_task(task_id, reason)
   release_reservations(t)
   t.status = "failed"
   t.error = reason
+  -- done_tick (2026-07-28, action-timing instrumentation): the tick this task
+  -- reached a terminal state, whether by failure or success (see complete_task
+  -- below) -- lets Python compute a whole-task wall duration (done_tick -
+  -- created_tick) alongside the finer per-step breakdown in step_ticks.
+  t.done_tick = game.tick
   u.log_error(string.format("task %d failed: %s", task_id, tostring(reason)), "task_pool")
 end
 
@@ -90,6 +95,7 @@ local function complete_task(task_id)
   if not t or t.status ~= "active" then return end
   release_reservations(t)
   t.status = "done"
+  t.done_tick = game.tick
 end
 
 -- Submit a new task_list under a fresh task_id (2026-07-07 design). `steps` is a
@@ -131,6 +137,13 @@ function M.submit_task(cid, steps)
     needs = remaining_needs,
     status = "active",
     created_tick = game.tick,
+    -- step_ticks (2026-07-28, action-timing instrumentation): populated by
+    -- task_pool.lua's M.tick at each cursor advance -- {[step_index] =
+    -- {type=.., start=.., done=..}} -- see that file's own comment for the
+    -- exact capture points. Starts empty; a step that never completes (task
+    -- aborted mid-step) simply never gets an entry, same "absence means
+    -- unresolved" convention Python's own -1/NaN padding already uses.
+    step_ticks = {},
   }
   return {task_id = task_id, needs = remaining_needs}
 end
@@ -146,6 +159,15 @@ function M.get_task_status(task_id)
     total_steps = #t.steps,
     needs = t.needs,
     ctx = t.ctx,  -- px/py/sx/sy/dir: useful for diagnosing placement failures externally
+    -- Action-timing instrumentation (2026-07-28): created_tick already existed
+    -- (used internally) but was never returned to callers before; done_tick/
+    -- step_ticks are new. All three are nil-safe for a task created before a
+    -- mid-save mod upgrade (storage.tasks is never pruned) -- a caller reading
+    -- an old record simply sees created_tick=nil/done_tick=nil/step_ticks=nil
+    -- rather than an error.
+    created_tick = t.created_tick,
+    done_tick = t.done_tick,
+    step_ticks = t.step_ticks,
   }
 end
 
