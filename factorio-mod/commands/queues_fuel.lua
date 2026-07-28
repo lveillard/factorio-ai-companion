@@ -48,7 +48,14 @@ function M.start_fuel_group(cid, per, radius)
     return {error = "companion busy with an active task-pool step"}
   end
   storage.fuel_queues[cid] = {per = per or 20, radius = radius or 200, state = "find",
-                              blacklist = {}, served = {}, fueled = 0, machines = 0}
+                              blacklist = {}, served = {}, fueled = 0, machines = 0,
+                              -- run_start_tick/run_end_tick (2026-07-28, action-timing
+                              -- instrumentation, batch 2): this domain already has a
+                              -- "done"-freeze grace period (get_fuel_status consumes
+                              -- it exactly once before deleting), so run_end_tick set
+                              -- at each q.state="done" transition below is reliably
+                              -- readable.
+                              run_start_tick = game.tick}
   return {started = true, per = per or 20, radius = radius or 200}
 end
 
@@ -64,12 +71,16 @@ function M.tick_fuel_queues()
     -- inside the first 2s poll interval, before Python ever saw an in-progress snapshot).
     if q.state == "done" then return false end
 
-    if inv.get_item_count("coal") <= 0 then q.state = "done"; return false end   -- out of coal -> done
+    if inv.get_item_count("coal") <= 0 then
+      q.run_end_tick = game.tick
+      q.state = "done"; return false   -- out of coal -> done
+    end
 
     if q.state == "find" then
       local e = find_next_burner(surf, c.entity.position, q.radius, q.per, q.blacklist, q.served)
       if not e then
         if next(q.served) then q.served = {}; return false end   -- round complete, some still need more -> new round
+        q.run_end_tick = game.tick
         q.state = "done"; return false                           -- truly nothing left to fuel -> done
       end
       q.target_pos = {x = e.position.x, y = e.position.y}
@@ -111,6 +122,7 @@ function M.tick_fuel_queues()
       q.state = "find"
       return false
     end
+    q.run_end_tick = game.tick
     q.state = "done"
     return false
   end)
@@ -131,9 +143,11 @@ function M.get_fuel_status(cid)
   end
   if q.state == "done" then
     storage.fuel_queues[cid] = nil
-    return {active = false, fueled = q.fueled, machines = q.machines, blacklist = bl}
+    return {active = false, fueled = q.fueled, machines = q.machines, blacklist = bl,
+      run_start_tick = q.run_start_tick, run_end_tick = q.run_end_tick}
   end
-  return {active = true, state = q.state, fueled = q.fueled, machines = q.machines, blacklist = bl}
+  return {active = true, state = q.state, fueled = q.fueled, machines = q.machines, blacklist = bl,
+    run_start_tick = q.run_start_tick, run_end_tick = q.run_end_tick}
 end
 
 return M

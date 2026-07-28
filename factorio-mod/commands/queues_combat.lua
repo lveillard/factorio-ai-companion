@@ -38,7 +38,14 @@ function M.start_combat(cid, target_pos)
     targets = enemies,
     current = enemies[1],
     cooldown = 0,
-    kills = 0
+    kills = 0,
+    -- run_start_tick/run_end_tick (2026-07-28, action-timing instrumentation,
+    -- batch 2): NOTE this domain has no "done"-freeze grace period (the
+    -- completion return true below deletes the entry the SAME tick), same
+    -- caveat as queues_harvest.lua/queues_craft.lua -- recorded anyway for
+    -- consistency (this queue type is also currently dormant in production,
+    -- no Python-side caller exists yet).
+    run_start_tick = game.tick,
   }
 
   return {started = true, targets = #enemies}
@@ -61,6 +68,7 @@ function M.tick_combat_queues()
 
       if #q.targets == 0 then
         c.entity.shooting_state = {state = defines.shooting.not_shooting}
+        q.run_end_tick = game.tick
         return true
       end
       q.current = table.remove(q.targets, 1)
@@ -93,7 +101,9 @@ function M.get_combat_status(cid)
   return {
     active = true,
     targets_remaining = remaining,
-    current_target = q.current and q.current.valid and q.current.name or nil
+    current_target = q.current and q.current.valid and q.current.name or nil,
+    run_start_tick = q.run_start_tick,
+    run_end_tick = q.run_end_tick,
   }
 end
 

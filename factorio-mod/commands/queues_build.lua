@@ -168,6 +168,15 @@ function M.start_build(cid, entity_name, position, direction, mirror)
     approach = approach,
     state = "approaching",
     tick_start = game.tick,
+    -- run_start_tick (2026-07-28, action-timing instrumentation, batch 2): a
+    -- SEPARATE field from tick_start, which this domain reuses/resets at
+    -- several state transitions (clearing->building, approaching-retry) to
+    -- drive get_build_status's own progress percentage -- unusable as a
+    -- stable whole-run marker. This domain already has a "done"/"failed"
+    -- freeze grace period (get_build_status consumes it exactly once before
+    -- deleting), so run_end_tick (set at each terminal transition below) is
+    -- reliably readable by the next poll.
+    run_start_tick = game.tick,
     -- Bounded deadline for the approach walk (2026-07-07, live-caught via
     -- task_pool.lua: a companion that couldn't physically reach the build target
     -- left this queue stuck in "approaching" forever -- CLAUDE.md checklist item
@@ -233,6 +242,7 @@ function M.tick_build_queues()
         storage.walking_queues[cid] = nil
         c.entity.walking_state = {walking = false}
         q.failed = "cannot reach build target (" .. q.position.x .. "," .. q.position.y .. ")"
+        q.run_end_tick = game.tick
         q.state = "failed"
       end
       return false
@@ -359,6 +369,7 @@ function M.tick_build_queues()
           q.self_collision_step_away_count, table.concat(diag.nearby, ",")),
           "build_queue")
         q.failed = "Cannot place (collision)"
+        q.run_end_tick = game.tick
         q.state = "failed"
         return false
       end
@@ -367,6 +378,7 @@ function M.tick_build_queues()
       -- during the walk -- crafted away / dropped). Never create a building for free.
       if c.entity.get_main_inventory().get_item_count(q.entity) < 1 then
         q.failed = "No " .. q.entity .. " in inventory"
+        q.run_end_tick = game.tick
         q.state = "failed"
         return false
       end
@@ -385,11 +397,13 @@ function M.tick_build_queues()
       end
       if not placed then
         q.failed = "create_entity returned nil"
+        q.run_end_tick = game.tick
         q.state = "failed"
         return false
       end
       if destroyed then
         q.failed = "item consumed before placement could complete"
+        q.run_end_tick = game.tick
         q.state = "failed"
         return false
       end
@@ -402,10 +416,12 @@ function M.tick_build_queues()
       -- real one) can end up overlapping the first entity's real footprint. (placed is
       -- guaranteed valid here -- the destroyed case returned above already.)
       q.placed_position = {x = placed.position.x, y = placed.position.y}
+      q.run_end_tick = game.tick
       q.state = "done"
       return false
     end
 
+    q.run_end_tick = game.tick
     return true
   end)
 end
@@ -420,11 +436,13 @@ function M.get_build_status(cid)
   -- happened as {"placed": true}.
   if q.state == "done" then
     storage.build_queues[cid] = nil
-    return {active = false, placed = true, position = q.placed_position}
+    return {active = false, placed = true, position = q.placed_position,
+      run_start_tick = q.run_start_tick, run_end_tick = q.run_end_tick}
   end
   if q.state == "failed" then
     storage.build_queues[cid] = nil
-    return {active = false, placed = false, error = q.failed}
+    return {active = false, placed = false, error = q.failed,
+      run_start_tick = q.run_start_tick, run_end_tick = q.run_end_tick}
   end
   local progress = 0
   if q.state == "approaching" then progress = 10

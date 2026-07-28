@@ -55,7 +55,18 @@ function M.start_harvest(cid, position, target_count, resource_name)
     harvested = 0,
     current = nil,
     resource_name = resource_name,
-    product = product
+    product = product,
+    -- run_start_tick/run_end_tick (2026-07-28, action-timing instrumentation,
+    -- batch 2): NOTE this queue type has NO "done"-freeze grace period (unlike
+    -- gather_queues/fuel_queues/build_queues/belt_queues below) -- process_queue
+    -- deletes the whole entry the SAME tick its processor returns true, so
+    -- run_end_tick (set right before each such return, see tick_harvest_queues)
+    -- is only externally observable if a status poll happens to land in that
+    -- exact tick -- essentially never via a real RCON poll loop. Recorded
+    -- anyway for consistency with every other queue domain and because Python's
+    -- own end-of-call wall-clock capture (batch 4) covers this domain's actual
+    -- completion moment regardless.
+    run_start_tick = game.tick,
   }
 
   M.start_mining_next(cid)
@@ -108,12 +119,14 @@ function M.tick_harvest_queues()
     -- Target reached
     if q.harvested >= q.target then
       c.entity.mining_state = {mining = false}
+      q.run_end_tick = game.tick
       return true
     end
 
     -- Too far from mining area
     if u.distance(c.entity.position, q.position) > MINING_RANGE then
       c.entity.mining_state = {mining = false}
+      q.run_end_tick = game.tick
       return true
     end
 
@@ -149,6 +162,7 @@ function M.tick_harvest_queues()
         -- same function that share the "harvest_queue" tag) is the stone-harvest
         -- adjacency-exhaustion stall.
         u.rare_symptom_save("RARE-MINE-01")
+        q.run_end_tick = game.tick
         return true
       end
       return false   -- fresh candidate selected -- re-check adjacency/progress next tick
@@ -167,6 +181,7 @@ function M.tick_harvest_queues()
         "harvest queue for companion %d ended short (%d/%d %s): no progress for %d ticks despite " ..
         "passing all reachability checks -- unknown stall", cid, q.harvested, q.target,
         q.resource_name or "?", q.stale_ticks), "harvest_queue")
+      q.run_end_tick = game.tick
       return true
     end
 
@@ -218,11 +233,14 @@ function M.tick_harvest_queues()
             "possible full inventory (mined items spilled to ground)",
             cid, q.harvested, q.target, q.resource_name or "?"), "harvest_queue")
         end
+        q.run_end_tick = game.tick
         return true
       end
     end
 
-    return q.harvested >= q.target
+    local done = q.harvested >= q.target
+    if done then q.run_end_tick = game.tick end
+    return done
   end)
 end
 
@@ -234,7 +252,9 @@ function M.get_harvest_status(cid)
     harvested = q.harvested,
     target = q.target,
     remaining = #q.entities,
-    mining = q.current ~= nil
+    mining = q.current ~= nil,
+    run_start_tick = q.run_start_tick,
+    run_end_tick = q.run_end_tick,
   }
 end
 

@@ -101,7 +101,13 @@ function M.start_belt_connect(cid, from_pos, to_pos)
     }
   end
 
-  storage.belt_queues[cid] = {path = path, idx = 1, tiles_placed = 0, state = "placing"}
+  storage.belt_queues[cid] = {path = path, idx = 1, tiles_placed = 0, state = "placing",
+    -- run_start_tick/run_end_tick (2026-07-28, action-timing instrumentation,
+    -- batch 2): this domain already has a "done"/"failed" freeze grace period
+    -- (get_belt_connect_status consumes it exactly once before deleting), so
+    -- run_end_tick (set at each terminal transition in tick_belt_queues) is
+    -- reliably readable by the next poll.
+    run_start_tick = game.tick}
   return {started = true, tiles = #path, need_belt = need_belt, need_underground = need_underground}
 end
 
@@ -115,7 +121,7 @@ function M.tick_belt_queues()
     local surf = c.entity.surface
     local reach = c.entity.build_distance or 10
     local node = q.path[q.idx]
-    if not node then q.state = "done"; return false end
+    if not node then q.run_end_tick = game.tick; q.state = "done"; return false end
 
     if u.distance(c.entity.position, {x = node.x, y = node.y}) > reach then
       -- APPROACH DEADLINE (cubic dev ai bot, 2026-07-04): unlike tick_gather_queues/
@@ -147,6 +153,7 @@ function M.tick_belt_queues()
         c.entity.walking_state = {walking = false}
         q.failed = "cannot reach belt tile (" .. node.x .. "," .. node.y .. ") -- " ..
                    (q.idx) .. "/" .. #q.path .. " placed before giving up"
+        q.run_end_tick = game.tick
         q.state = "failed"
       end
       return false
@@ -161,6 +168,7 @@ function M.tick_belt_queues()
     local pos = {x = node.x, y = node.y}
     if c.entity.get_main_inventory().get_item_count(item) < 1 then
       q.failed = "Out of " .. item .. " mid-build (" .. q.idx .. "/" .. #q.path .. " placed)"
+      q.run_end_tick = game.tick
       q.state = "failed"; return false
     end
     -- `type` (input/output) is a create_entity-only field for underground belts, not a
@@ -168,6 +176,7 @@ function M.tick_belt_queues()
     -- unrecognized key can't make the check itself error or behave unexpectedly.
     if not surf.can_place_entity{name = item, position = pos, direction = node.dir, force = c.entity.force} then
       q.failed = "Cannot place " .. item .. " at (" .. node.x .. "," .. node.y .. ")"
+      q.run_end_tick = game.tick
       q.state = "failed"; return false
     end
     local create_args = {name = item, position = pos, direction = node.dir, force = c.entity.force}
@@ -175,17 +184,22 @@ function M.tick_belt_queues()
     local placed = surf.create_entity(create_args)
     if not placed then
       q.failed = "create_entity returned nil"
+      q.run_end_tick = game.tick
       q.state = "failed"; return false
     end
     -- Never a free build: consume the real item, undo if it somehow isn't there anymore.
     if c.entity.remove_item{name = item, count = 1} < 1 then
       placed.destroy()
       q.failed = "item vanished before consuming"
+      q.run_end_tick = game.tick
       q.state = "failed"; return false
     end
     q.tiles_placed = q.tiles_placed + 1
     q.idx = q.idx + 1
-    if q.idx > #q.path then q.state = "done" end
+    if q.idx > #q.path then
+      q.run_end_tick = game.tick
+      q.state = "done"
+    end
     return false
   end)
 end
@@ -195,11 +209,13 @@ function M.get_belt_connect_status(cid)
   if not q then return {active = false} end
   if q.state == "done" then
     storage.belt_queues[cid] = nil
-    return {active = false, connected = true, tiles = q.tiles_placed}
+    return {active = false, connected = true, tiles = q.tiles_placed,
+      run_start_tick = q.run_start_tick, run_end_tick = q.run_end_tick}
   end
   if q.state == "failed" then
     storage.belt_queues[cid] = nil
-    return {active = false, connected = false, error = q.failed, tiles = q.tiles_placed}
+    return {active = false, connected = false, error = q.failed, tiles = q.tiles_placed,
+      run_start_tick = q.run_start_tick, run_end_tick = q.run_end_tick}
   end
   return {active = true, tiles_placed = q.tiles_placed, tiles_total = #q.path}
 end

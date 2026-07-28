@@ -283,6 +283,13 @@ function M.process_queue(queue_name, processor)
         if not recovered_via_respawn then
           c.entity.mining_state = {mining = false}
           c.entity.walking_state = {walking = false}
+          -- run_end_tick (2026-07-28, action-timing instrumentation, batch 2): this
+          -- generic backstop force-stops a queue WITHOUT ever calling its domain's own
+          -- tick_*_queues processor (so none of THOSE functions' own run_end_tick=
+          -- game.tick writes execute for this path) -- stamped once here, shared
+          -- across every queue domain, so a force-stopped run still gets an end tick
+          -- instead of leaving run_end_tick nil forever.
+          q.run_end_tick = game.tick
           -- TERMINAL (2026-07-12): freeze gather_queues/fuel_queues in q.state="done" for
           -- one more poll cycle instead of deleting the entry immediately here -- mirrors
           -- the IDENTICAL pattern tick_gather_queues/tick_fuel_queues/tick_build_queues/

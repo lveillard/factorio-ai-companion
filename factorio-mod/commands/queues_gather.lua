@@ -351,7 +351,13 @@ function M.start_gather(cid, resource, count, exclude, from_task_pool)
     end
   end
   storage.gather_queues[cid] = {resource = resource, target = count, state = "find",
-    last_mine_tick = 0, blacklist = blacklist}
+    last_mine_tick = 0, blacklist = blacklist,
+    -- run_start_tick/run_end_tick (2026-07-28, action-timing instrumentation,
+    -- batch 2): unlike harvest_queues, this domain already has a "done"-freeze
+    -- grace period (see get_gather_status's own TERMINAL comment below) -- so
+    -- run_end_tick, set at each q.state="done" transition, IS reliably readable
+    -- by the next status poll before the entry is actually deleted.
+    run_start_tick = game.tick}
   return {started = true, resource = resource, target = count}
 end
 
@@ -389,6 +395,7 @@ function M.tick_gather_queues()
         -- something blocked".
         q.find_retry_deadline = q.find_retry_deadline or (game.tick + 300)
         if game.tick < q.find_retry_deadline then return false end
+        q.run_end_tick = game.tick
         q.state = "done"; return false   -- no reachable patch left after retrying -> done, return what we have
       end
       local mp = e.prototype.mineable_properties
@@ -500,6 +507,7 @@ function M.tick_gather_queues()
       local gathered = inv.get_item_count(q.product) - (q.start_count or 0)
       if gathered >= q.target then
         c.entity.mining_state = {mining = false}
+        q.run_end_tick = game.tick
         q.state = "done"; return false   -- target met
       end
       -- MINE_STUCK_TICKS bookkeeping (2026-07-27, see that constant's own docstring):
@@ -896,11 +904,13 @@ function M.get_gather_status(cid, peek)
     if not peek then storage.gather_queues[cid] = nil end
     return {active = false, resource = q.resource, target = q.target, gathered = have,
       blacklist = bl, entity_pos = q.entity_pos,
-      selected = selected_name, mining_state_mining = mining}
+      selected = selected_name, mining_state_mining = mining,
+      run_start_tick = q.run_start_tick, run_end_tick = q.run_end_tick}
   end
   return {active = true, resource = q.resource, target = q.target, gathered = have,
     state = q.state, blacklist = bl, entity_pos = q.entity_pos,
-    selected = selected_name, mining_state_mining = mining}
+    selected = selected_name, mining_state_mining = mining,
+    run_start_tick = q.run_start_tick, run_end_tick = q.run_end_tick}
 end
 
 return M
