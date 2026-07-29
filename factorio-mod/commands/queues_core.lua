@@ -262,6 +262,51 @@ function M.process_queue(queue_name, processor)
               q._approach_stall_respawned and " (after an earlier respawn-retry also stalled)" or ""),
               "gather_queue")
           end
+        elseif queue_name == "gather_queues" and q.state == "mine" and q.entity_pos and q.resource then
+          -- MINE-STATE UNIVERSAL-STALE GAP (2026-07-29, ep129 discard investigation,
+          -- live-caught: gather("iron-ore",20) force-stopped repeatedly at the exact
+          -- SAME stuck_at/entity_pos across MANY consecutive gather() calls, blacklist
+          -- always empty -- live RCON confirmed no obstruction/unwalkable terrain
+          -- anywhere nearby, so the companion should have been able to reach and mine
+          -- normally). Root cause: this generic backstop's own recovery-blacklist
+          -- logic only ever handled q.state=="approach" (added 2026-07-12/13, see that
+          -- branch's own APPROACH-DEADLINE-VS-UNIVERSAL-STALE-GAP comment for the full
+          -- analysis) -- the sibling "mine" state (character already close enough,
+          -- actively trying to select/extract) had NO equivalent recovery at all, so a
+          -- stall here just tore the queue down with mining_state/walking_state reset
+          -- and an EMPTY blacklist, guaranteeing the very next gather() call for this
+          -- resource would walk right back into the identical doomed target. This
+          -- codebase's own MINE_STUCK_TICKS=300 (queues_gather.lua) is deliberately
+          -- BELOW UNIVERSAL_STALE_TICKS=600 specifically so its own more-specific
+          -- recovery should win this race first -- but that mechanism only counts
+          -- ticks where mining_state.mining is actually true; if selection itself never
+          -- sticks in a way SELECT_FAIL_TICKS's own check doesn't catch either, NEITHER
+          -- specific mechanism ever engages, and this generic 600-tick catch-all is the
+          -- only thing left to recover at all. Mirrors the "approach" branch's own
+          -- radius=15 "whole patch, not just one tile" blacklist sweep exactly (same
+          -- reasoning: an adjacent, structurally-identical resource tile is just as
+          -- likely to hit the identical defect) -- deliberately NOT adding the
+          -- "approach" branch's own respawn-first step here too: that mitigation was
+          -- validated for a DIFFERENTLY-diagnosed, walking-specific engine defect
+          -- (Mode A/B select-fail), not this mining-adjacent stall, so it is not
+          -- assumed to apply here without its own live confirmation.
+          q.blacklist = q.blacklist or {}
+          local added = 0
+          for _, e in ipairs(c.entity.surface.find_entities_filtered{
+            name = q.resource, position = q.entity_pos, radius = 15}) do
+            local key = math.floor(e.position.x) .. "," .. math.floor(e.position.y)
+            if not q.blacklist[key] then added = added + 1 end
+            q.blacklist[key] = true
+          end
+          u.log_error(string.format(
+            "gather_queues generic-backstop recovery (mine state): blacklisted %d " ..
+            "tile(s) of '%s' around entity_pos (%.1f,%.1f) before force-stop -- " ..
+            "queues_gather.lua's own MINE_STUCK_TICKS never got a chance to recover " ..
+            "this stall (MINE_STUCK_TICKS is a queues_gather.lua-local, not visible " ..
+            "here -- this module loads before it, see this file's own Registration " ..
+            "indirection comment above)",
+            added, q.resource, q.entity_pos.x, q.entity_pos.y),
+            "gather_queue")
         elseif queue_name == "fuel_queues" and q.state == "approach" and q.target_key then
           -- fuel_queues' own "approach" handler blacklists only the single target_key
           -- (not a radius sweep): unlike a resource patch, a burner machine is one
