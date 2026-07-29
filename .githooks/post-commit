@@ -27,6 +27,20 @@ if [ -n "$changed" ]; then
     echo "[post-commit] WARNING: publish_mod_to_web.sh failed -- mod web copy may be" \
          "stale, republish manually: $repo_dir/scripts/publish_mod_to_web.sh" >&2
   fi
+  # deploy_mod_to_local.sh (2026-07-29, ep135 discard investigation -- see that
+  # script's own header comment for the full incident): the web publish above
+  # NEVER updated ~/.factorio/mods/ai-companion, the directory the LOCAL running
+  # Factorio server actually loads its mod from -- confirmed live to have sat 2
+  # versions stale (0.16.128 vs repo's 0.16.130), silently neutering the last two
+  # mod-side fixes of this same overnight session despite both passing their own
+  # luac -p + live-RCON-smoke-test verification (which only proves the mod loads
+  # without crashing, never that the NEW code is what's actually running).
+  echo "[post-commit] factorio-mod/ changed -- mirroring to local Factorio mods dir ..."
+  if ! "$repo_dir/scripts/deploy_mod_to_local.sh"; then
+    echo "[post-commit] WARNING: deploy_mod_to_local.sh failed -- the LOCAL running" \
+         "game may still be on a stale mod version, redeploy manually:" \
+         "$repo_dir/scripts/deploy_mod_to_local.sh" >&2
+  fi
 fi
 
 exit 0
