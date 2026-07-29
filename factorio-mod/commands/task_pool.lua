@@ -217,6 +217,37 @@ end
 -- change cheaply without needing to hook into every individual queue type's own
 -- completion point (harvest/gather/craft/fuel/build each add or remove items in
 -- their own way -- comparing the total sidesteps enumerating all of them).
+-- TASK_NEEDS_UNMET_GIVEUP_TICKS (2026-07-29, ep106 discard investigation): a task
+-- whose needs are STILL unmet after this many ticks since submission is failed
+-- explicitly, instead of sitting in storage.tasks forever with active_step[cid]
+-- never set. This is a deliberate, bounded DEPARTURE from this module's own
+-- documented v1 design above ("a task with unmet needs just stays blocked...
+-- something ELSE is expected to top that up") -- that design has no give-up of
+-- its own, and pick_next() (below) only ever considers task_ready() tasks, so a
+-- task whose one missing item never actually arrives (crafted under a different
+-- name, consumed by a concurrent task, or simply never provisioned) never gets a
+-- chance to hit ANY of queues_build.lua's own bounded per-step deadlines --
+-- those only start counting once a step is actually scheduled as active, which
+-- never happens while task_ready() is false. Live-caught: power_plant's pump
+-- "place" step (a single-item need, no ensure_item precondition of its own)
+-- stalled this way for a full episode; the ONLY thing that eventually recovered
+-- it was power_plant_dispatch.py's own outer POWER_PLANT_STAGE_DEADLINE_TICKS=
+-- 18000 blind timeout, burning a full 300s per shore attempt before the 3-strikes
+-- budget (_abort_power_build_failed_3x) was exhausted mid-episode.
+-- Set well below every established *_STAGE_DEADLINE_TICKS=18000 convention in
+-- this project's Python side, so a genuinely-stuck task gets a fast, explicit
+-- "failed" status well within that outer deadline's own window -- Python's
+-- existing st.get("status")=="failed" checks (already present at every stage
+-- poll site, e.g. power_plant_dispatch.py's pump-stage branch) then react almost
+-- immediately instead of waiting out the blind timeout, leaving MORE of the same
+-- outer retry budget usable within one episode. Still generous relative to any
+-- legitimate procurement wait actually in progress (gather_queues/craft_queues
+-- deliveries typically resolve in low thousands of ticks when genuinely working;
+-- a task with a truly active supplier is not the case this guards against --
+-- see the reservation_epoch mechanism just below, which re-evaluates needs the
+-- moment ANY inventory change makes them satisfiable, well before this ceiling).
+local TASK_NEEDS_UNMET_GIVEUP_TICKS = 6000  -- 100 game-seconds @ 60 ticks/s
+
 local function refresh_needs()
   local ids = {}
   for task_id, t in pairs(storage.tasks) do
@@ -224,6 +255,27 @@ local function refresh_needs()
   end
   if #ids == 0 then return end
   table.sort(ids)
+  for _, task_id in ipairs(ids) do
+    local t = storage.tasks[task_id]
+    if t.created_tick and game.tick - t.created_tick >= TASK_NEEDS_UNMET_GIVEUP_TICKS then
+      local missing = {}
+      for item, deficit in pairs(t.needs) do
+        missing[#missing + 1] = item .. "x" .. deficit
+      end
+      ledger.fail_task(task_id, "needs never satisfied within "
+        .. TASK_NEEDS_UNMET_GIVEUP_TICKS .. " ticks: " .. table.concat(missing, ","))
+    end
+  end
+  -- Re-fetch: any task failed just above must be excluded from the reservation
+  -- work below (release_reservations already cleared its t.reserved/t.needs,
+  -- but it may still be in `ids` from the snapshot taken above).
+  local ids2 = {}
+  for _, task_id in ipairs(ids) do
+    local t = storage.tasks[task_id]
+    if t.status == "active" then ids2[#ids2 + 1] = task_id end
+  end
+  ids = ids2
+  if #ids == 0 then return end
   storage.inv_count_cache = storage.inv_count_cache or {}
   -- reservation_epoch check (2026-07-09, see release_reservations' own comment for the
   -- full live-caught symptom): a task's needs must be re-evaluated not just when ITS
