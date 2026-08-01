@@ -146,6 +146,12 @@ local run_pick_orientation = steps.run_pick_orientation
 -- polling is scheduler state, not procurement logic).
 local WOOD_CHOP_REACH = 3           -- mirrors fac_mine_entity's own distance<=15 check loosely; close enough to swing
                                      -- (sole remaining use: the "chop" dispatch below, in M.tick)
+-- WOOD_STOCK_CAP (2026-08-01, task #82) -- mirrors the same constant/reasoning in
+-- queues_build.lua's clear_build_area and queues_gather.lua's obstruction-clear
+-- (RAW_MATERIAL_STOCK_CAPS["wood"]=200 in the Python repo's src/rl/opening_
+-- targets.py, 2x the real 100-unit stack size) -- keep all 3 Lua copies and the
+-- Python constant in sync if it ever changes.
+local WOOD_STOCK_CAP = 200
 
 function M.init()
   storage.tasks = storage.tasks or {}
@@ -722,6 +728,18 @@ function M.tick()
         if trees[1] and trees[1].valid then
           local inv = c.entity.get_main_inventory()
           local before = inv.get_item_count("wood")
+          -- STOCK CAP (2026-08-01, task #82 -- see WOOD_STOCK_CAP's own docstring in
+          -- queues_build.lua's clear_build_area for the full live-verified incident):
+          -- unlike clear_build_area/gather's obstruction-clear (a FORCED tile-clear
+          -- that must happen regardless), this "chop" step exists ONLY to satisfy a
+          -- task's own wood deficit -- if wood is already at/over its own cap, there
+          -- is no need to chop MORE, so simply skip mining and leave the tree in
+          -- place (it may still be useful to a later, genuine deficit) rather than
+          -- unconditionally mining it.
+          if before >= WOOD_STOCK_CAP then
+            active.state = "acting"
+            goto continue
+          end
           trees[1].mine{inventory = inv}
           if inv.get_item_count("wood") > before then
             t.ctx.wood_chop_count = (t.ctx.wood_chop_count or 0) + 1

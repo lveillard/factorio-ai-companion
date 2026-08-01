@@ -22,6 +22,12 @@ local MINE_ADJACENT_RANGE = core.MINE_ADJACENT_RANGE
 
 local M = {}
 
+-- WOOD_STOCK_CAP (2026-08-01, task #82) -- mirrors the same constant/reasoning in
+-- queues_build.lua's clear_build_area (RAW_MATERIAL_STOCK_CAPS["wood"]=200 in the
+-- Python repo's src/rl/opening_targets.py, 2x the real 100-unit stack size) -- keep
+-- both Lua copies and the Python constant in sync if it ever changes.
+local WOOD_STOCK_CAP = 200
+
 -- SELECT_FAIL_TICKS (2026-07-11, live-reproduced iron-ore-gather-returns-0 bootstrap
 -- stall, scripts/test_gather_select_fail.py -- see that test + queues.lua's "mine" state
 -- comment below for the full mechanism): `character.selected = <entity>` is documented
@@ -702,7 +708,24 @@ function M.tick_gather_queues()
           local cleared = 0
           for _, obs in ipairs(obstacles) do
             if obs.valid then
-              obs.mine{inventory = c.entity.get_main_inventory()}
+              -- STOCK CAP (2026-08-01, task #82 -- see WOOD_STOCK_CAP's own
+              -- docstring in queues_build.lua's clear_build_area for the full
+              -- live-verified incident/reasoning; same fix, mirrored here since
+              -- this is a SEPARATE obstruction-clear call site, not a shared
+              -- helper). The ore tile MUST still be cleared regardless (forced,
+              -- not discretionary), but a bare mine{} (no inventory=) still does
+              -- that while discarding the mined item entirely once wood is
+              -- already at/over its own 200-unit cap -- ground-truthed live,
+              -- see scripts/live_verify_mine_no_inventory_semantics.py in the
+              -- Python repo.
+              local inv = c.entity.get_main_inventory()
+              local mp = obs.prototype.mineable_properties
+              local product = mp and mp.products and mp.products[1] and mp.products[1].name
+              if product == "wood" and inv.get_item_count("wood") >= WOOD_STOCK_CAP then
+                obs.mine{}
+              else
+                obs.mine{inventory = inv}
+              end
               cleared = cleared + 1
             end
           end

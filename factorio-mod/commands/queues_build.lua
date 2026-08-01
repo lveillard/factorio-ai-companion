@@ -82,6 +82,19 @@ end
 -- drain (belt_connect_ops.py, commit 5c73768) -- this was the third, still-unfixed
 -- code path for the identical bug class: task_pool.lua's "place" step routes
 -- through queues.start_build, whose clearing state only cleared trees/rocks.
+-- WOOD_STOCK_CAP (2026-08-01, task #82 -- Zdendys's own directive, live-verified:
+-- wood reached 453-692 units in the companion's personal inventory during a real
+-- reactive-loop run, against its own 200-unit cap, with ZERO Python-side trace
+-- from any wood-gathering function -- root-caused directly to clear_build_area's
+-- own unconditional obs.mine{inventory=inv} below, live-reproduced independently
+-- (scripts/live_verify_tree_clear_wood_credit.py: a single place_smart call that
+-- forced a tree-clear credited exactly +4 wood, matching the tree's own vanilla
+-- yield). Mirrors RAW_MATERIAL_STOCK_CAPS["wood"]=200 in the Python repo's
+-- src/rl/opening_targets.py (2x the real 100-unit stack size) -- keep in sync if
+-- that Python constant ever changes; this mod has no shared-code path to import
+-- it directly.
+local WOOD_STOCK_CAP = 200
+
 local function clear_build_area(surf, entity_name, position, inv)
   local proto = prototypes.entity[entity_name]
   if not proto or not proto.collision_box then return end
@@ -92,7 +105,27 @@ local function clear_build_area(surf, entity_name, position, inv)
   }
   local obstacles = surf.find_entities_filtered{area = area, type = {"tree", "simple-entity"}}
   for _, obs in ipairs(obstacles) do
-    if obs.valid then obs.mine{inventory = inv} end   -- MINE (wood/stone into inventory), not free-destroy
+    if obs.valid then
+      -- STOCK CAP (2026-08-01, task #82): the tile MUST still be cleared regardless
+      -- (this is a forced obstruction-clear, not discretionary gathering), but once
+      -- wood is already at/over its own cap, mine with a BARE mine{} instead of
+      -- mine{inventory=inv} -- ground-truthed live
+      -- (scripts/live_verify_mine_no_inventory_semantics.py) that a bare mine{}
+      -- still destroys the entity and clears the tile, but discards the mined item
+      -- entirely (no inventory credit, no ground-spawn) -- exactly what's needed
+      -- here. Only wood is checked (the confirmed live overshoot); other obstacle
+      -- products (e.g. simple-entity rocks -> stone) already have their own
+      -- Python-side "return surplus to chest" self-correction (stone_drill_ops.py),
+      -- confirmed live to actually self-correct an over-cap excursion within the
+      -- same run this fix responds to -- not touched here, out of scope.
+      local mp = obs.prototype.mineable_properties
+      local product = mp and mp.products and mp.products[1] and mp.products[1].name
+      if product == "wood" and inv.get_item_count("wood") >= WOOD_STOCK_CAP then
+        obs.mine{}
+      else
+        obs.mine{inventory = inv}   -- MINE (wood/stone into inventory), not free-destroy
+      end
+    end
   end
   for _, it in ipairs(surf.find_entities_filtered{area = area, type = "item-entity"}) do
     if it.valid and it.stack and it.stack.valid_for_read then
