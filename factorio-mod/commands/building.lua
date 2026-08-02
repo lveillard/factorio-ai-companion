@@ -2,18 +2,6 @@
 local u = require("commands.init")
 local queues = require("commands.queues")
 
--- WOOD_STOCK_CAP (2026-08-01, task #82) -- mirrors the same constant/reasoning in
--- queues_build.lua's clear_build_area, queues_gather.lua's obstruction-clear, and
--- task_pool.lua's chop_mine step (RAW_MATERIAL_STOCK_CAPS["wood"]=200 in the
--- Python repo's src/rl/opening_targets.py, 2x the real 100-unit stack size) --
--- keep all 4 Lua copies and the Python constant in sync if it ever changes.
--- FOUND LATE (same day, 2nd live_verify_stock_caps re-run after the other 3 sites
--- were already fixed+deployed): wood still reached 228/200 -- this SYNCHRONOUS
--- fac_building_place command (used by direct place() calls, distinct from the
--- async place_smart/task_pool "place" step the other 3 sites cover) has its OWN
--- separate, previously-unaudited copy of the identical tree-clearing pattern.
-local WOOD_STOCK_CAP = 200
-
 commands.add_command("fac_building_can_place", nil, function(cmd)
   u.safe_command(function()
     local args = u.parse_args("^(%S+)%s+(%S+)%s+([%d.-]+)%s+([%d.-]+)%s*(%d*)$", cmd.parameter)
@@ -91,21 +79,12 @@ commands.add_command("fac_building_place", nil, function(cmd)
         -- companion inventory), never free-destroy. If the inventory is full, mine{} leaves the
         -- obstacle intact -- placement then fails cleanly instead of magically clearing the map.
         for _, o in ipairs(surf.find_entities_filtered{area = area, type = {"tree", "simple-entity"}}) do
-          if o.valid then
-            -- STOCK CAP (2026-08-01, task #82) -- see WOOD_STOCK_CAP's own docstring
-            -- above for the full live-verified incident. The footprint MUST still be
-            -- cleared regardless (forced, not discretionary), but a bare mine{} (no
-            -- inventory=) still does that while discarding the mined item entirely
-            -- once wood is already at/over its own cap -- ground-truthed live, see
-            -- scripts/live_verify_mine_no_inventory_semantics.py in the Python repo.
-            local mp = o.prototype.mineable_properties
-            local product = mp and mp.products and mp.products[1] and mp.products[1].name
-            if product == "wood" and c.entity.get_main_inventory().get_item_count("wood") >= WOOD_STOCK_CAP then
-              o.mine{}
-            else
-              o.mine{inventory = c.entity.get_main_inventory()}
-            end
-          end
+          -- REVERTED (2026-08-02, task #82 course-correction) -- see
+          -- queues_build.lua's clear_build_area comment for the full reasoning: the
+          -- companion must NEVER refuse to collect wood -- back to unconditional
+          -- mine{inventory=...} exactly as before the 2026-08-01 WOOD_STOCK_CAP
+          -- attempt.
+          if o.valid then o.mine{inventory = c.entity.get_main_inventory()} end
         end
       end
     end
