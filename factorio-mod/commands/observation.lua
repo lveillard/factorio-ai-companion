@@ -52,7 +52,7 @@ local function last_jobs(cid)
   local result = {}
   for _, name in ipairs(u.settings.queues) do
     local q = storage.queue_results and storage.queue_results[name .. "_queues"] and storage.queue_results[name .. "_queues"][cid]
-    if q then result[name] = {state=q.state, error=q.error, finished_tick=q.finished_tick,
+    if q then result[name] = {state=q.state, error=q.error, finished_tick=q.finished_tick, run_start_tick=q.run_start_tick, run_end_tick=q.run_end_tick,
       gathered=q.gathered, crafted=q.crafted, harvested=q.harvested, resource=q.resource, recipe=q.recipe} end
   end
   return result

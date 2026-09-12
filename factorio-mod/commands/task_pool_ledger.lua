@@ -1,4 +1,3 @@
-
 local u = require("commands.init")
 
 local M = {}
@@ -6,8 +5,6 @@ function M.reservations(cid)
   storage.reserved[cid] = storage.reserved[cid] or {}
   return storage.reserved[cid]
 end
-
--- ---- needs derivation + reservation ledger ----
 
 local function derive_needs(steps, upto)
   local needs = {}
@@ -33,7 +30,6 @@ local function release_reservations(t)
     reserved[item] = math.max(0, (reserved[item] or 0) - count)
   end
   t.reserved = {}
-  storage.reservation_epoch = (storage.reservation_epoch or 0) + 1
 end
 
 function M.cancel_task(task_id)
@@ -41,6 +37,7 @@ function M.cancel_task(task_id)
   if not t or t.status ~= "active" then return end
   release_reservations(t)
   t.status = "cancelled"
+  t.done_tick = game.tick
 end
 
 local function fail_task(task_id, reason)
@@ -49,6 +46,7 @@ local function fail_task(task_id, reason)
   release_reservations(t)
   t.status = "failed"
   t.error = reason
+  t.done_tick = game.tick
   u.log_error(string.format("task %d failed: %s", task_id, tostring(reason)), "task_pool")
 end
 
@@ -57,6 +55,7 @@ local function complete_task(task_id)
   if not t or t.status ~= "active" then return end
   release_reservations(t)
   t.status = "done"
+  t.done_tick = game.tick
 end
 
 function M.submit_task(cid, steps)
@@ -94,6 +93,7 @@ function M.submit_task(cid, steps)
     needs = remaining_needs,
     status = "active",
     created_tick = game.tick,
+    step_ticks = {},
   }
   return {task_id = task_id, needs = remaining_needs}
 end
@@ -109,6 +109,9 @@ function M.get_task_status(task_id)
     total_steps = #t.steps,
     needs = t.needs,
     ctx = t.ctx,  -- px/py/sx/sy/dir: useful for diagnosing placement failures externally
+    created_tick = t.created_tick,
+    done_tick = t.done_tick,
+    step_ticks = t.step_ticks,
   }
 end
 

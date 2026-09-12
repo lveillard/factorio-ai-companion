@@ -10,7 +10,14 @@ Date: 2026-09-13
     - Correct machine inventory names, quantities and quality; avoid duplicate fuel entries.
     - Resume agent requests after native jobs, including jobs that stop before the agent replies.
     - Attribute game replies to the addressed companion.
+  Features:
+    - Integrate the latest PR #2 engine improvements: modular queues, path recovery and mining target selection.
+    - Add direct companion controls to the English dashboard and compact automatic model context.
+    - Expose task/queue timing and a tool to clear unexpected machine output.
   Changes:
+    - Check drill resource footprints without creating temporary entities.
+    - Collect nearby furnace output and report blocked material requests explicitly.
+    - Keep failed recovery attempts from destroying the companion.
     - Use item_craft_start/status/stop as the single tracked crafting API.
     - Add Lua regression tests that run without Factorio.
 ---------------------------------------------------------------------------------------------------

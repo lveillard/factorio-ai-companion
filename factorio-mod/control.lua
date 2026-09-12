@@ -9,6 +9,10 @@ local MOD_VERSION = script.active_mods["ai-companion"] or "unknown"
 
 local CLEARABLE_ROCK_NAMES = {"big-rock", "big-sand-rock", "huge-rock"}
 
+local WALK_TARGET_WALKABLE_RADIUS = u.settings.walking.target_walkable_radius
+
+local WAYPOINT_STALL_REPATH_TICKS = u.settings.walking.waypoint_stall_repath_ticks
+
 local function init_storage()
   storage.companion_messages = storage.companion_messages or {}
   storage.companions = storage.companions or {}
@@ -19,6 +23,7 @@ local function init_storage()
   storage.companion_markers = storage.companion_markers or {}
   storage.path_requests = storage.path_requests or {}
   storage.walk_last_outcome = storage.walk_last_outcome or {}
+  storage.walk_last_arrived = storage.walk_last_arrived or {}
   queues.init()
   task_pool.init()
 end
@@ -256,6 +261,11 @@ script.on_event(defines.events.on_script_path_request_finished, function(ev)
       "walking path request for companion %d returned NO PATH (target=(%.1f,%.1f))",
       cid, q.target and q.target.x or -1, q.target and q.target.y or -1),
       "walk_path_no_path")
+    -- RARE-WALK-01 (2026-07-19/20, Zdendys's save-for-later-review scheme -- see
+    -- STATUS.md and u.rare_symptom_save's own comment for the full mechanism):
+    -- captures the exact moment/state of a no-path failure for later visual
+    -- inspection, debounced per-code so a repeat within the cooldown doesn't spam.
+    u.rare_symptom_save("RARE-WALK-01")
   end
 end)
 
@@ -273,6 +283,20 @@ local function process_walking_queues()
     end
     if not q.target then storage.walking_queues[cid] = nil; goto skip end
     local e = c.entity
+    if not q.follow_player and not q.target_checked then
+      q.target_checked = true
+      local ok, corrected = pcall(function()
+        return e.surface.find_non_colliding_position(
+          "character", q.target, WALK_TARGET_WALKABLE_RADIUS, 0.5)
+      end)
+      if ok and corrected and u.distance(corrected, q.target) > 0.1 then
+        u.log_error(string.format(
+          "walk target (%.1f,%.1f) for companion %d was not walkable -- retargeting to "
+          .. "nearest walkable position (%.1f,%.1f)",
+          q.target.x, q.target.y, cid, corrected.x, corrected.y), "walk_target_retargeted")
+        q.target = {x = corrected.x, y = corrected.y}
+      end
+    end
     local dist = u.distance(e.position, q.target)
 
     if q.clearing_target and not q.clearing_target.valid then
@@ -298,7 +322,10 @@ local function process_walking_queues()
 
     if dist < 2 then
       e.walking_state = {walking = false}
-      if not q.follow_player then storage.walking_queues[cid] = nil end
+      if not q.follow_player then
+        storage.walk_last_arrived[cid] = {x = q.target.x, y = q.target.y, tick = game.tick}
+        storage.walking_queues[cid] = nil
+      end
       q.stuck_ticks = 0
       q.bypass_ticks = 0
     else
@@ -330,11 +357,6 @@ local function process_walking_queues()
         end
       end
 
-      -- Pathfind around big obstacles (water/cliffs): request a route once per
-      -- target, then steer toward the current WAYPOINT instead of straight at the
-      -- final goal. Falls back to straight-line below while no route is available.
-      -- timeout a stuck pending request: if the finished-event never arrives (e.g. the
-      -- request id was lost across save/load), reset so pathfinding isn't disabled forever.
       if q.path_pending and q.path_req_tick and (game.tick - q.path_req_tick) > 600 then
         q.path_pending = false
         q.path_failed_tick = game.tick
@@ -373,6 +395,7 @@ local function process_walking_queues()
                 "walking path for companion %d needs_destroy_to_reach at (%.1f,%.1f) but "
                 .. "no mineable tree/rock found there -- likely a cliff (needs explosives, "
                 .. "not yet handled)", cid, goal.x, goal.y), "walk_path_unclearable")
+              u.rare_symptom_save("RARE-WALK-02")
             end
           end
         else
@@ -380,17 +403,23 @@ local function process_walking_queues()
         end
       end
 
+      if q.path and q.path_idx then
+        if q.last_path_idx ~= q.path_idx then
+          q.last_path_idx = q.path_idx
+          q.waypoint_stall_ticks = 0
+        else
+          q.waypoint_stall_ticks = (q.waypoint_stall_ticks or 0) + 5
+        end
+      else
+        q.waypoint_stall_ticks = 0
+        q.last_path_idx = nil
+      end
+
       -- Stuck detection: compare position to previous call
       local prev = q.prev_pos
       local moved = prev and u.distance(prev, e.position) or 1
       q.prev_pos = {x = e.position.x, y = e.position.y}
 
-      -- Stuck AND nothing within reach=1 to sustained-mine (the block above already
-      -- covers the common case): the actual blocker may be slightly farther away than
-      -- reach=1 (a wider obstacle's collision edge, or simply not centered under the
-      -- reach=1 sample point) -- widen the search to radius=4 and target it via the SAME
-      -- q.clearing_target + mining_state mechanism (not a separate one-shot entity.mine{}
-      -- -- same reasoning as above: mining_time is real, one-shot calls fail silently).
       if moved < 0.3 and not q.clearing_target then
         local nearby = find_clearable_obstacles(e.surface, e.position, 4)
         if nearby[1] then
@@ -411,7 +440,22 @@ local function process_walking_queues()
 
       local dir_to_target = u.get_direction(e.position, goal)
 
-      if (q.bypass_ticks or 0) > 0 then
+      if (q.waypoint_stall_ticks or 0) >= WAYPOINT_STALL_REPATH_TICKS and q.path then
+        u.log_error(string.format(
+          "walking path for companion %d stalled on the same waypoint for %d "
+          .. "ticks -- requesting a fresh path around the current obstacle "
+          .. "instead of repeating the same blocked step", cid,
+          q.waypoint_stall_ticks), "walk_path_repath_after_stuck")
+        q.path = nil
+        q.path_idx = nil
+        q.last_path_idx = nil
+        q.waypoint_stall_ticks = 0
+        q.stuck_ticks = 0
+        q.bypass_attempts = nil
+        q.bypass_side = nil
+        q.bypass_ticks = 0
+        e.walking_state = {walking = false}
+      elseif (q.bypass_ticks or 0) > 0 then
         -- Continue bypass: walk perpendicular to unblock
         if q.bypass_dir then
           e.walking_state = {walking = true, direction = q.bypass_dir}

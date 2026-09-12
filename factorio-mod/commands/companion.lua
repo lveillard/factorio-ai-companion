@@ -125,7 +125,10 @@ u.register("companion_position", function(args)
         if d < 100 then players[#players + 1] = {name = p.name, distance = math.floor(d)} end
       end
     end
-    u.json_response({id = id, position = {x = math.floor(pos.x * 10) / 10, y = math.floor(pos.y * 10) / 10}, nearby = summary, players = players}, id)
+    local walk = storage.walking_queues[id]
+    local arrived = storage.walk_last_arrived and storage.walk_last_arrived[id]
+    local walk_target = (walk and walk.target) or arrived
+    u.json_response({id = id, position = {x = math.floor(pos.x * 10) / 10, y = math.floor(pos.y * 10) / 10}, nearby = summary, players = players, walk_target = walk_target}, id)
   end)
 end)
 
@@ -182,7 +185,8 @@ u.register("companion_inventory", function(args)
         items[#items + 1] = {name = item.name, count = item.count, quality = item.quality}
       end
       table.sort(items, function(a, b) return a.count > b.count end)
-      u.json_response({id = id, items = items, slots = #inv, used = #items})
+      u.json_response({id = id, items = items, slots = #inv, used = #items,
+                        empty_stacks = inv.count_empty_stacks()})
     end
   end)
 end)

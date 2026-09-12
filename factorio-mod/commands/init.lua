@@ -78,6 +78,20 @@ function M.log_error(msg, ctx)
   if #storage.errors > settings.retention.errors then table.remove(storage.errors, 1) end
 end
 
+local RARE_SYMPTOM_SAVE_COOLDOWN_TICKS = settings.diagnostics.save_cooldown_ticks  -- ~60s at 60 UPS, regardless of game.speed
+function M.rare_symptom_save(code)
+  if not settings.diagnostics.save_rare_symptoms then return false end
+  storage.rare_symptom_last_save = storage.rare_symptom_last_save or {}
+  local last = storage.rare_symptom_last_save[code]
+  if last and (game.tick - last) < RARE_SYMPTOM_SAVE_COOLDOWN_TICKS then
+    return false
+  end
+  storage.rare_symptom_last_save[code] = game.tick
+  local ok, err = pcall(game.server_save, "rare_symptoms/" .. code .. "/" .. code .. "_" .. game.tick)
+  if not ok then M.log_error(tostring(err), code) end
+  return ok
+end
+
 function M.dump_context(surf, position, opts)
   opts = opts or {}
   local radius = opts.radius or 1.5
@@ -195,15 +209,6 @@ function M.render_label(entity, text, color)
   }
 end
 
--- Factorio 2.0 "craft-item" research triggers fire only when a PLAYER completes a
--- craft; a headless scripted companion's begin_crafting does NOT fire them, so a
--- crafted item that should unlock a technology (e.g. crafting a lab unlocks the
--- automation-science-pack recipe) leaves the tech enabled-but-unresearched. This
--- compensates: after the companion REALLY crafts an item (ingredients consumed via
--- begin_crafting), research any matching craft-item trigger tech whose prereqs are
--- met. NOT a cheat -- the item was genuinely produced through game mechanics; this
--- only replicates the craft event a connected player would have generated. Items
--- producible by machines (plates from furnaces) already fire their triggers normally.
 function M.fire_craft_triggers(force, item_name, crafted)
   if not item_name or (crafted or 0) < 1 then return end
   for _, tech in pairs(force.technologies) do
@@ -212,11 +217,6 @@ function M.fire_craft_triggers(force, item_name, crafted)
       if rt and rt.type == "craft-item" then
         local rname = type(rt.item) == "table" and (rt.item.name or rt.item[1]) or rt.item
         if rname == item_name then
-          -- Only THIS hand-craft counts. Do NOT read item_production_statistics: that is CUMULATIVE
-          -- MACHINE output (plates from furnaces, etc.) and would complete a craft-item trigger from
-          -- production the player never hand-crafted = a cheat. Machine-produced trigger items already
-          -- fire their triggers via the engine; this path only replicates the on_player_crafted_item
-          -- trigger the engine skips for a SCRIPTED companion craft.
           if (crafted or 0) >= (rt.count or 1) then
             tech.researched = true
             game.print("[companion] crafted " .. item_name ..

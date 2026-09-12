@@ -15,13 +15,14 @@ const modules = readdirSync(directory)
   )
   .join("\n");
 const fixture = readFileSync(join(PROJECT_ROOT, "tests/fixtures/game.lua"), "utf8");
+const control = `package.preload["control"] = function(...)\n${readFileSync(join(PROJECT_ROOT, "factorio-mod/control.lua"), "utf8")}\nend`;
 function run(source: string) {
   const state = lauxlib.luaL_newstate();
   lualib.luaL_openlibs(state);
   try {
     const status = lauxlib.luaL_dostring(
       state,
-      to_luastring(modules + "\n" + fixture + "\n" + source),
+      to_luastring(modules + "\n" + control + "\n" + fixture + "\n" + source),
     );
     if (status !== lua.LUA_OK) throw new Error(lua.lua_tojsstring(state, -1));
   } finally {
@@ -130,4 +131,180 @@ test("Lua: belt pathfinding avoids occupied tiles and reports blocked endpoints"
   end
   local blocked,reason=pathfind.find_path(surf,{x=0,y=0},{x=2,y=0},entity.force)
   assert(not blocked and reason=="dest-blocked")
+`));
+
+test("Lua: mining with a stuck selection changes tile without reporting completion", () =>
+  run(`
+  entity.surface.find_non_colliding_position=function() return nil end
+  local ore = {name="ore",type="resource",valid=true,amount=100,position={x=1,y=0}}
+  entity.surface.find_entities_filtered = function(args) return args.name and {ore} or {} end
+  entity.get_main_inventory().can_insert = function() return true end
+  entity.selected=ore
+  entity.mining_state={mining=true}
+  storage.gather_queues[1]={state="mine",resource="ore",product="ore",start_count=0,target=60,
+    entity_pos={x=1,y=0},mine_gathered_at_entry=0,mine_stuck_ticks=u.settings.queue_tuning.mine_stuck_ticks}
+  queues.tick_gather_queues()
+  local q=storage.gather_queues[1]
+  assert(q.state=="find" and q.blacklist["1,0"] and not entity.mining_state.mining)
+  assert(queues.get_gather_status(1).active)
+`));
+
+test("Lua: gathering skips ore covered by a machine", () =>
+  run(`
+  local blocked={name="ore",type="resource",valid=true,amount=100,position={x=1,y=0}}
+  local free={name="ore",type="resource",valid=true,amount=100,position={x=4,y=0},prototype={mineable_properties={products={{name="ore"}}}}}
+  entity.surface.find_entities_filtered=function(args)
+    if args.name then return {blocked,free} end
+    return args.position.x==1 and {{valid=true,type="furnace"}} or {}
+  end
+  entity.surface.count_entities_filtered=function() return 0 end
+  entity.surface.find_non_colliding_position=function(_,p) return p end
+  queues.start_gather(1,"ore",20)
+  queues.tick_gather_queues()
+  assert(storage.gather_queues[1].entity_pos.x==4)
+`));
+
+test("Lua: blocked tasks expire but procurement of future materials keeps running", () =>
+  run(`
+  local pool=require("commands.task_pool")
+  pool.init()
+  local blocked=pool.submit_task(1,{{type="place",entity="stone-furnace",x=0,y=0}}).task_id
+  pool.tick()
+  assert(pool.get_task_status(blocked).active)
+  game.tick=u.settings.task_tuning.needs_unmet_giveup_ticks
+  pool.tick()
+  assert(pool.get_task_status(blocked).status=="failed")
+  local preparing=pool.submit_task(1,{{type="ensure_item",item="wood",count=1},{type="place",entity="stone-furnace"}}).task_id
+  storage.gather_queues[1]={state="mine"}
+  game.tick=game.tick+u.settings.task_tuning.needs_unmet_giveup_ticks*2
+  pool.tick()
+  assert(pool.get_task_status(preparing).active, "future materials must not expire an active procurement step")
+`));
+
+test("Lua: task fuel selects the nearest burner and fails clearly without a target", () =>
+  run(`
+  local pool=require("commands.task_pool")
+  pool.init()
+  items.coal=5
+  local amounts={0,0}
+  local function burner(x,index)
+    return {valid=true,position={x=x,y=0},get_fuel_inventory=function()
+      return {insert=function(stack) amounts[index]=amounts[index]+stack.count;return stack.count end}
+    end}
+  end
+  entity.remove_item=function(stack) items[stack.name]=items[stack.name]-stack.count;return stack.count end
+  entity.surface.find_entities_filtered=function(args)
+    assert(args.type[3]=="inserter", "burner-inserter is a name, not an entity type")
+    return {burner(2,1),burner(0,2)}
+  end
+  local task=pool.submit_task(1,{{type="fuel",item="coal",count=3,x=0,y=0}}).task_id
+  pool.tick(); pool.tick()
+  assert(amounts[1]==0 and amounts[2]==3)
+  assert(pool.get_task_status(task).status=="done")
+  local invalid=pool.submit_task(1,{{type="fuel",item="coal",count=1}}).task_id
+  pool.tick(); pool.tick()
+  assert(pool.get_task_status(invalid).error:find("no target position"))
+`));
+
+test("Lua: procurement collects matching furnace output beyond an empty nearer machine", () =>
+  run(`
+  local procurement=require("commands.task_pool_ensure_item")
+  prototypes.recipe["iron-plate"]={category="smelting",ingredients={{name="iron-ore",amount=1}},products={{name="iron-plate",amount=1}}}
+  local counts={0,2}
+  local function furnace(x,index)
+    return {valid=true,position={x=x,y=0},get_recipe=function() return prototypes.recipe["iron-plate"] end,
+      get_output_inventory=function() return {valid=true,get_contents=function() return {{name="iron-plate",count=counts[index],quality="normal"}} end,
+        remove=function(stack) counts[index]=counts[index]-stack.count;return stack.count end,
+        insert=function(stack) counts[index]=counts[index]+stack.count;return stack.count end} end}
+  end
+  entity.insert=function(stack) items[stack.name]=(items[stack.name] or 0)+stack.count;return stack.count end
+  entity.surface.find_entities_filtered=function() return {furnace(1,1),furnace(2,2)} end
+  local task={ctx={ensure_stack={{item="iron-plate",count=2}}}}
+  assert(procurement.start_ensure_item_action(storage.companions[1],1,task)=="satisfied")
+  assert(items["iron-plate"]==2 and counts[2]==0)
+  items["iron-plate"]=nil
+  entity.surface.find_entities_filtered=function() return {} end
+  local result,err=procurement.start_ensure_item_action(storage.companions[1],1,task)
+  assert(not result and err:find("No nearby machine"))
+`));
+
+test("Lua: drill footprints reject mixed or missing resources without creating entities", () =>
+  run(`
+  local steps=require("commands.task_pool_steps")
+  prototypes.entity.drill={type="mining-drill",collision_box={left_top={x=-1,y=-1},right_bottom={x=1,y=1}}}
+  entity.surface.can_place_entity=function() return true end
+  entity.surface.create_entity=function() error("Read checks must not create entities") end
+  entity.surface.get_tile=function() return {name="grass"} end
+  local mode="mixed"
+  entity.surface.find_entities_filtered=function(args)
+    if args.area then
+      if mode=="empty" then return {} end
+      if mode=="mixed" then return {{valid=true,name="coal"},{valid=true,name="iron-ore"}} end
+      return {{valid=true,name="coal"}}
+    end
+    return {}
+  end
+  local task={ctx={px=0,py=0},cursor=2,steps={{type="find_patch",resource="coal"}}}
+  local step={primary="drill",secondary="drill",offsets={{2,0}}}
+  assert(not steps.run_pick_orientation(storage.companions[1],task,step))
+  mode="empty"
+  assert(not steps.run_pick_orientation(storage.companions[1],task,step))
+  mode="coal"
+  assert(steps.run_pick_orientation(storage.companions[1],task,step))
+`));
+
+test("Lua: a failed recovery clone leaves the companion and its inventory intact", () =>
+  run(`
+  entity.surface.find_non_colliding_position=function(_,pos) return pos end
+  entity.clone=function() return nil end
+  entity.destroy=function() error("Original must survive a failed clone") end
+  local result=queues.debug_respawn_entity(1)
+  assert(not result.respawned and storage.companions[1].entity==entity and items.plate==20)
+`));
+
+test("Lua: clearing wrong furnace output preserves quality and rolls back overflow", () =>
+  run(`
+  require("commands.building")
+  local stored=3
+  local inv={valid=true,get_contents=function() return {{name="copper-plate",count=stored,quality="uncommon"}} end,
+    remove=function(stack) assert(stack.quality=="uncommon");stored=stored-stack.count;return stack.count end,
+    insert=function(stack) assert(stack.quality=="uncommon");stored=stored+stack.count;return stack.count end}
+  entity.surface.find_entities_filtered=function() return {{valid=true,type="furnace",position={x=1,y=0},get_output_inventory=function() return inv end}} end
+  entity.insert=function(stack) assert(stack.quality=="uncommon");return 1 end
+  local result
+  u.json_response=function(value) result=value end
+  u.handlers.building_clear_wrong_output{companionId=1,itemName="iron-plate",x=1,y=0}
+  assert(result.cleared and result.count==1 and stored==2)
+`));
+
+test("Lua: walking retargets blocked destinations, replans stalled paths and retains arrival", () =>
+  run(`
+  local init,tick,path_event
+  script={active_mods={["ai-companion"]="test"},on_init=function(fn) init=fn end,
+    on_configuration_changed=function() end,on_event=function(_,fn) path_event=fn end,
+    on_nth_tick=function(_,fn) tick=fn end}
+  commands={add_command=function() end}
+  defines.events={on_script_path_request_finished=1}
+  defines.entity_status={}
+  require("control")
+  init()
+  prototypes.entity.character={collision_box={},collision_mask={}}
+  local requests={}
+  entity.surface.find_entities_filtered=function() return {} end
+  entity.surface.find_non_colliding_position=function(_,pos) return {x=8,y=pos.y} end
+  entity.surface.request_path=function(args) requests[#requests+1]=args;return #requests end
+  storage.walking_queues[1]={target={x=10,y=0}}
+  game.tick=5;tick{tick=5}
+  assert(#requests==1 and requests[1].goal.x==8)
+  path_event{id=1,path={{position={x=8,y=0}}}}
+  local q=storage.walking_queues[1]
+  q.last_path_idx=1;q.waypoint_stall_ticks=u.settings.walking.waypoint_stall_repath_ticks
+  game.tick=10;tick{tick=10}
+  game.tick=15;tick{tick=15}
+  for _,error in ipairs(storage.errors) do assert(error.context~="walking",error.error) end
+  assert(#requests==2 and q.path_pending, "a stale waypoint must request a new path")
+  entity.position={x=8,y=0}
+  game.tick=20;tick{tick=20}
+  assert(not storage.walking_queues[1] and storage.walk_last_arrived[1].x==8)
+  for _,error in ipairs(storage.errors) do assert(error.context~="walking",error.error) end
 `));

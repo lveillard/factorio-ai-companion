@@ -49,7 +49,8 @@ u.register("building_place", function(args)
          and c.entity.position.y >= area[1].y and c.entity.position.y <= area[2].y then
         u.json_response({id = id, error = "companion on build site -- move off first"}); return
       end
-      if not can_here() then   -- only clear when something actually blocks placement
+      for _clear_attempt = 1, 3 do
+        if can_here() then break end   -- only clear when something actually blocks placement
         -- lying items: pick up the ACTUAL stack (preserves quality/count); keep if inv full
         for _, it in ipairs(surf.find_entities_filtered{area = area, type = "item-entity"}) do
           if it.valid and it.stack and it.stack.valid_for_read then
@@ -174,7 +175,7 @@ u.register("building_fuel", function(args)
     local inv = c.entity.get_inventory(defines.inventory.character_main)
     local have = inv.get_item_count(fuel)
     if have == 0 then u.json_response({id = id, error = "No " .. fuel}); return end
-    local es = c.entity.surface.find_entities_filtered{position = c.entity.position, radius = 3, type = {"furnace", "boiler", "inserter", "car", "locomotive", "mining-drill"}}
+    local es = c.entity.surface.find_entities_filtered{position = c.entity.position, radius = u.settings.task_tuning.fuel_reach, type = {"furnace", "boiler", "inserter", "car", "locomotive", "mining-drill"}}
     if #es == 0 then u.json_response({id = id, error = "No burner nearby"}); return end
     -- Fuel EVERY nearby burner (not just es[1], whose order is arbitrary): in a tight
     -- furnace row, fueling only the first leaves the others starved -> they stop smelting
@@ -213,15 +214,6 @@ u.register("building_empty", function(args)
     end
     local ext = 0
     if target then
-      -- defines.inventory.fuel added so surplus can be collected from a self-fueling burner
-      -- (e.g. a coal-drill pair, [[coal_drill_self_fueling]]) -- caller is responsible for
-      -- requesting less than the full amount so the burner keeps a running buffer.
-      -- NOTE: defines.inventory.furnace_result/furnace_source are STALE 1.x names, removed
-      -- in Factorio 2.0's inventory unification -- they are nil here, and indexing
-      -- get_inventory(nil) THROWS (not returns nil), which used to abort this whole loop
-      -- before ever reaching `fuel` unless chest/crafter_output alone already satisfied the
-      -- request. crafter_output already covers furnace output in 2.0+, so no replacement
-      -- entry is needed for the removed furnace_result.
       for _, it in ipairs({defines.inventory.chest, defines.inventory.crafter_output,
                            defines.inventory.fuel}) do
         local inv = target.get_inventory(it)
@@ -243,6 +235,46 @@ u.register("building_empty", function(args)
   end)
 end)
 
+u.register("building_clear_wrong_output", function(args)
+  u.safe_command(function()
+    local id, c = u.find_companion(args.companionId)
+    if not id then u.not_found(); return end
+    local expected_item, x, y = args.itemName, tonumber(args.x), tonumber(args.y)
+    if not x or not y then u.error_response("Invalid coordinates"); return end
+    local pos = {x = x, y = y}
+    if u.distance(c.entity.position, pos) > (c.entity.reach_distance or 10) then
+      u.json_response({id = id, error = "Too far"}); return
+    end
+    local es = c.entity.surface.find_entities_filtered{position = pos, radius = 1, type = {"furnace", "assembling-machine"}}
+    local target, bd = nil, 1e18
+    for _, e in ipairs(es) do
+      if e.valid and e ~= c.entity and e.type ~= "resource" then
+        local dx, dy = e.position.x - pos.x, e.position.y - pos.y
+        local d = dx * dx + dy * dy
+        if d < bd then bd, target = d, e end
+      end
+    end
+    if not target then u.json_response({id = id, cleared = false, error = "Not found"}); return end
+    local inv = target.get_output_inventory()
+    if not inv then u.json_response({id = id, cleared = false, error = "No output inventory"}); return end
+    local contents = u.inventory_contents(inv)
+    for _, stack in ipairs(contents) do
+      if stack.name ~= expected_item then
+        local rm = inv.remove{name = stack.name, count = stack.count, quality = stack.quality}
+        if rm > 0 then
+          local ins = c.entity.insert{name = stack.name, count = rm, quality = stack.quality}
+          if ins < rm then inv.insert{name = stack.name, count = rm - ins, quality = stack.quality} end
+          if ins > 0 then
+            u.json_response({id = id, cleared = true, item = stack.name, count = ins})
+            return
+          end
+        end
+      end
+    end
+    u.json_response({id = id, cleared = false})
+  end)
+end)
+
 u.register("building_fill", function(args)
   u.safe_command(function()
     local id, c = u.find_companion(args.companionId)
@@ -255,12 +287,6 @@ u.register("building_fill", function(args)
     local inv = c.entity.get_inventory(defines.inventory.character_main)
     local have = inv.get_item_count(item)
     if have == 0 then u.json_response({id = id, error = "No " .. item}); return end
-    -- Insert ONLY into the entity CLOSEST to the target tile, not the first in radius:
-    -- in a tight furnace row several furnaces are within radius, and feeding the wrong
-    -- one breaks parallel smelting (observed: copper-ore fed an iron furnace -> 0 copper).
-    -- e.type ~= "resource" excludes raw ore/stone/coal patches -- same tie-break bug as
-    -- fac_building_empty above (a resource tile can be exactly as close to `pos` as the
-    -- real target, and would win the tie non-deterministically otherwise).
     local es = c.entity.surface.find_entities_filtered{position = pos, radius = 3}
     local target, bd = nil, 1e18
     for _, e in ipairs(es) do
@@ -299,11 +325,6 @@ u.register("building_mine", function(args)
     if not target then u.json_response({id = id, error = "No entity found"}); return end
     if u.distance(c.entity.position, target.position) > 15 then u.json_response({id = id, error = "Too far"}); return end
     local entity_name = target.name
-    -- NATIVE mining (real game mechanic): mine{} yields the entity's products (tree->wood,
-    -- rock->stone, building->its item) AND its inventory contents into the companion inventory, then
-    -- removes the entity -- exactly like hand-mining. If the companion inventory can't hold the
-    -- result, mine{} returns false and the entity is LEFT INTACT: no silent item loss, no
-    -- destroy-without-return, no fabricating items. (Never bypass game mechanics -- no cheating.)
     local inv = c.entity.get_main_inventory()
     local before = inv.get_item_count()
     -- NATIVE mining: tree->wood, rock->stone, building->its item + contents, all into the inventory,

@@ -31,7 +31,9 @@
   },
   "walking": {
     "min_deadline_ticks": 1800,
-    "deadline_ticks_per_tile": 25
+    "deadline_ticks_per_tile": 25,
+    "target_walkable_radius": 3,
+    "waypoint_stall_repath_ticks": 150
   },
   "queue_tuning": {
     "tick_interval": 5,
@@ -48,15 +50,23 @@
     "select_fail_respawn_streak": 1,
     "approach_timeout": 900,
     "max_self_collision_step_away": 2,
-    "underground_max_distance": 5
+    "underground_max_distance": 5,
+    "mine_stuck_ticks": 300
   },
   "task_tuning": {
-    "fuel_reach": 3,
+    "fuel_reach": 6,
     "walk_reach": 2,
     "ensure_item_max_depth": 4,
     "wood_chop_reach": 3,
     "wood_chop_max_trees": 10,
     "ensure_item_gather_max_attempts": 5,
-    "ensure_item_container_search_radius": 5
+    "ensure_item_container_search_radius": 5,
+    "smelt_wait_ticks": 14400,
+    "ensure_item_furnace_search_radius": 5,
+    "needs_unmet_giveup_ticks": 6000
+  },
+  "diagnostics": {
+    "save_rare_symptoms": false,
+    "save_cooldown_ticks": 3600
   }
 }

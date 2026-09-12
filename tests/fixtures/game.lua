@@ -1,4 +1,6 @@
 defines = {direction={north=0,east=4,south=8,west=12}, inventory={character_main=1}, shooting={not_shooting=0}}
+-- Fengari's Lua 5.3 atan(y, x) supplies Factorio's Lua 5.2 atan2.
+math.atan2 = math.atan
 storage = {companions={}, walking_queues={}, tasks={}, reserved={}, active_step={}, path_requests={}, errors={}}
 game = {tick=0, print=function() end, forces={}, surfaces={}}
 prototypes = {recipe={gear={energy=0.5}}, entity={}}

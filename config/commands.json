@@ -1483,7 +1483,7 @@
           "type": "integer",
           "minimum": 8,
           "maximum": 96,
-          "description": "Observation radius (8–96 tiles)"
+          "description": "Observation radius in tiles"
         }
       },
       "required": [
@@ -2353,6 +2353,54 @@
         }
       },
       "required": [],
+      "additionalProperties": false
+    }
+  },
+  "building_clear_wrong_output": {
+    "description": "Unblock a machine by moving unexpected output into the companion inventory. Keep itemName in place; preserve quality and return any items that do not fit.",
+    "execution": "game",
+    "effect": "act",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companionId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "itemName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "allOf": [
+            {
+              "type": "string",
+              "pattern": "^[^\\r\\n\\0]*$"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\S*$"
+            }
+          ],
+          "description": "Expected output to keep in the machine"
+        },
+        "x": {
+          "type": "number",
+          "minimum": -1000000,
+          "maximum": 1000000
+        },
+        "y": {
+          "type": "number",
+          "minimum": -1000000,
+          "maximum": 1000000
+        }
+      },
+      "required": [
+        "companionId",
+        "itemName",
+        "x",
+        "y"
+      ],
       "additionalProperties": false
     }
   }
