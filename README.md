@@ -15,7 +15,7 @@ bun run start
 
 Open **http://127.0.0.1:3210**. Select **Conectar Codex**, finish the login, then **Iniciar compañero**. Send instructions in the browser or with `/fac consigue hierro` and `/fac 1 construye un horno` in Factorio. **Parar todo** interrupts Codex and cancels native companion work. Messages received while paused remain queued; a restart starts paused and does not replay interrupted actions.
 
-Enable RCON in Factorio's `config.ini`, under `[other]`:
+Close Factorio completely before editing its configuration: a running game can overwrite external changes when saving its settings. Enable RCON in `config.ini`, under `[other]`:
 
 ```ini
 local-rcon-socket=127.0.0.1:34198
@@ -24,7 +24,7 @@ local-rcon-password=factorio
 
 Restart Factorio and host a multiplayer game. For a headless server, use `--rcon-port 34198 --rcon-password YOUR_PASSWORD`. Copy `.env.example` to `.env` to change the bridge's host, port and matching password. `bun run doctor` locates your game/mod directory and reports configuration without printing secrets.
 
-On a local setup, `bun run game:launch` backs up this config, applies the matching loopback RCON settings and opens Factorio. Close an existing Factorio instance first.
+On a local setup, `bun run game:launch` backs up this config, applies the matching loopback RCON settings and opens Factorio. It refuses to change the config while Factorio is running. RCON requires hosting multiplayer; you can host a private local game and play alone with companions. The single-player menu mode does not expose this connection.
 
 `mod:install` backs up the previous companion mod and mod list under `.local/mod-backups`, then installs a fresh copy. Saves and other mods are preserved. `bun run mod:package` writes the versioned mod ZIP to `dist/`.
 

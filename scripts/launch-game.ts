@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { readSettings } from "../config/settings";
 import { LOCAL_DIR } from "../src/config";
 import { factorioBinary, factorioModDirectory } from "./paths";
@@ -10,6 +10,27 @@ const settings = readSettings(),
 if (!binary) throw new Error("Factorio not found; set FACTORIO_BINARY");
 if (!["127.0.0.1", "localhost"].includes(settings.FACTORIO_HOST))
   throw new Error("game:launch configures a local game; launch remote servers on their own host");
+// Factorio saves its in-memory configuration on exit and can overwrite external edits.
+const windows = process.platform === "win32";
+const processes = spawnSync(
+  windows ? "tasklist.exe" : "pgrep",
+  windows
+    ? ["/FI", `IMAGENAME eq ${basename(binary)}`, "/FO", "CSV", "/NH"]
+    : ["-x", basename(binary)],
+  { encoding: "utf8", windowsHide: true },
+);
+if (processes.error || processes.status === null || processes.status > (windows ? 0 : 1))
+  throw new Error("Could not check whether Factorio is running; configuration was not changed");
+const running = windows
+  ? processes.stdout
+      .toLowerCase()
+      .split(/\r?\n/)
+      .some((line) => line.startsWith(`"${basename(binary).toLowerCase()}",`))
+  : processes.status === 0;
+if (running)
+  throw new Error(
+    "Save your game and close Factorio completely, then run bun run game:launch again. Configuration was not changed.",
+  );
 const config = join(dirname(factorioModDirectory()), "config", "config.ini");
 if (!existsSync(config)) throw new Error(`Open Factorio once to create ${config}`);
 const backups = join(LOCAL_DIR, "game-config-backups");
