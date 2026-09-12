@@ -19,11 +19,12 @@
     "@openai/codex": "0.154.0",
     "zod": "4.3.5"
   },
-  "version": "0.17.0",
+  "version": "0.18.0",
   "scripts": {
     "dev": "bun scripts/dev.ts",
     "start": "bun src/dashboard/main.ts",
     "mcp": "bun src/index.ts",
+    "claude": "bun scripts/claude.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "validate": "bun scripts/validate-tools.ts",
@@ -35,6 +36,7 @@
     "codex:smoke": "bun scripts/test-codex.ts",
     "generate": "bun scripts/generate.ts",
     "mod:package": "bun scripts/package-mod.ts",
+    "mod:publish": "bun scripts/publish-mod.ts",
     "test:web": "bun scripts/test-web.ts",
     "format": "prettier --write \"src/**/*.ts\" \"src/dashboard/web/*.{html,css}\" \"scripts/*.ts\" \"tests/*.ts\" \"config/settings.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"src/dashboard/web/*.{html,css}\" \"scripts/*.ts\" \"tests/*.ts\" \"config/settings.ts\"",

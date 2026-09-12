@@ -40,5 +40,5 @@ await new Promise<void>((resolve, reject) => {
 });
 child.unref();
 console.log(
-  `Factorio opened. Host a multiplayer game; RCON is configured on 127.0.0.1:${settings.FACTORIO_RCON_PORT}.`,
+  `Factorio launch requested; accept Steam's prompt if shown. Host a multiplayer game; RCON is configured on 127.0.0.1:${settings.FACTORIO_RCON_PORT}.`,
 );

@@ -1,7 +1,7 @@
 import { timingSafeEqual, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { readSettings, type Settings } from "../../config/settings";
+import { applicationUrl, readSettings, type Settings } from "../../config/settings";
 import { PROJECT_ROOT } from "../config";
 import { createMCPHttp } from "../mcp/server";
 import { RCONClient } from "../rcon/client";
@@ -38,16 +38,7 @@ export function createApplication(
     token = existsSync(path) ? readFileSync(path, "utf8").trim() : randomBytes(32).toString("hex");
     if (!existsSync(path)) writeFileSync(path, token, { mode: 0o600 });
   }
-  const host = settings.COMPANION_HOST.includes(":")
-    ? `[${settings.COMPANION_HOST.replace(/[\[\]]/g, "")}]`
-    : settings.COMPANION_HOST === "0.0.0.0"
-      ? "localhost"
-      : settings.COMPANION_HOST;
-  const publicUrl = new URL(
-    settings.COMPANION_PUBLIC_URL || `http://${host}:${settings.COMPANION_PORT}`,
-  );
-  if (!["http:", "https:"].includes(publicUrl.protocol))
-    throw new Error("COMPANION_PUBLIC_URL must use HTTP or HTTPS");
+  const publicUrl = applicationUrl(settings);
   const origins = new Set([
     publicUrl.origin,
     `http://127.0.0.1:${settings.COMPANION_PORT}`,

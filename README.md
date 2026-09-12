@@ -44,6 +44,23 @@ For a game on the Docker host, set `FACTORIO_HOST=host.docker.internal` and make
 
 MCP authentication grants access to game tools. The separate Codex/ChatGPT login authorizes the assistant's model usage; neither credential is a replacement for the other.
 
+## Use your own harness
+
+For **Claude Code**, keep the HTTP service running with `bun run start`, then run `bun run claude` from another terminal. The launcher loads the local server token (or `COMPANION_ACCESS_TOKEN` from `.env`) and attaches the HTTP MCP server to your existing Claude Code account. It explicitly selects the modern MCP client; the tested Claude Code version is 2.1.270. The panel stays available for world observation and logs. Leave its Codex agent paused while controlling companions from your harness.
+
+For **Codex CLI**, enable the modern protocol in its configuration:
+
+```toml
+[features]
+mcp_2026_07_28 = true
+
+[mcp_servers.factorio]
+url = "http://127.0.0.1:3210/mcp"
+bearer_token_env_var = "COMPANION_ACCESS_TOKEN"
+```
+
+Set that environment variable to the service token before starting Codex. Codex uses its own ChatGPT login; no dashboard login is needed for this route. `config/harnesses.json` holds the client feature switches, and `codex:smoke` checks the pinned real client against this server without starting model inference. A custom harness can consume the same MCP endpoint and manage its model separately.
+
 ## Sources of truth
 
 | File | Drives |
@@ -52,6 +69,7 @@ MCP authentication grants access to game tools. The separate Codex/ChatGPT login
 | `config/settings.ts` | Environment defaults, validation and generated `.env.example` |
 | `config/gameplay.json` | Queue kinds, observation/retention limits and gameplay tuning |
 | `config/mod.json` + `package.json` | Generated mod metadata and the single release version |
+| `config/harnesses.json` | Modern MCP client switches for the Claude launcher and Codex integration check |
 
 Run `bun run generate` after changing configuration. Generated Lua and metadata are checked in so the mod can be packaged independently. Do not edit generated files. Lua handlers own game behavior; the dashboard, Codex host and MCP transport all share one serialized `GameBridge`.
 
@@ -73,3 +91,9 @@ For browser tests on Linux, install Chromium with `bunx playwright install --wit
 The revival incorporates the game engine from [PR #2 by Zdendys79](https://github.com/lveillard/factorio-ai-companion/pull/2), reviewed at `323ce441b078bc0d44d96af81c1b28bec70b2d61`. The old Claude daemons, subprocess skills, positional RCON endpoints, obsolete context commands and automatic publishing hooks have been removed. Historical plans remain available in Git.
 
 Codex integration follows the [official app-server protocol](https://developers.openai.com/codex/app-server/). Dependency upgrades should include the app-server smoke test and the modern MCP client tests.
+
+## Publish a release
+
+Change `package.json` and add the matching entry to `factorio-mod/changelog.txt`, then run `bun run generate`, `bun run check`, `bun run codex:smoke` and the relevant integration checks. `bun run mod:package` creates the uploadable ZIP with its generated metadata.
+
+Upload it from the existing mod's [downloads page](https://mods.factorio.com/mod/ai-companion/downloads), or put a key with **ModPortal: Upload Mods** scope in `.env` as `FACTORIO_MOD_UPLOAD_API_KEY` and run `bun run mod:publish`. This explicit command refuses an existing version and verifies the published file hash. Publish the matching bridge source alongside the mod so users can install the same command contract. The upload key is never required at runtime.

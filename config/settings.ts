@@ -57,6 +57,12 @@ export const SETTINGS = {
     default: "",
     description: "Optional Factorio mods directory; otherwise inferred from this operating system",
   },
+  FACTORIO_MOD_UPLOAD_API_KEY: {
+    type: "string",
+    default: "",
+    secret: true,
+    description: "Mod Portal key with Upload Mods scope; used only by mod:publish",
+  },
   POLL_INTERVAL_MS: {
     type: "integer",
     default: 2000,
@@ -89,6 +95,18 @@ export const SETTINGS = {
 
 type SettingValue<T> = T extends { type: "integer" } ? number : string;
 export type Settings = { [K in keyof typeof SETTINGS]: SettingValue<(typeof SETTINGS)[K]> };
+
+export function applicationUrl(settings: Settings): URL {
+  const host = settings.COMPANION_HOST.includes(":")
+    ? `[${settings.COMPANION_HOST.replace(/[\[\]]/g, "")}]`
+    : settings.COMPANION_HOST === "0.0.0.0"
+      ? "localhost"
+      : settings.COMPANION_HOST;
+  const url = new URL(settings.COMPANION_PUBLIC_URL || `http://${host}:${settings.COMPANION_PORT}`);
+  if (!["http:", "https:"].includes(url.protocol))
+    throw new Error("COMPANION_PUBLIC_URL must use HTTP or HTTPS");
+  return url;
+}
 
 export function readSettings(env: Record<string, string | undefined> = process.env): Settings {
   const result: Record<string, string | number> = {};
