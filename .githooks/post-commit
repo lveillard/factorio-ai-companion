@@ -43,4 +43,27 @@ if [ -n "$changed" ]; then
   fi
 fi
 
+# --- Auto-push after every commit -------------------------------------------
+# Zdendys, 2026-09-12, after finding 38 commits sitting local-only for weeks
+# (the "publish to web" step above ran every time, but nothing ever pushed to
+# origin): "Ah bože!!! Tak si to nastav jako automatické a dělej to tak! -
+# PAMTUJ SI TO!" Commit and push must never again be two separate steps that a
+# session can get interrupted between. A push failure (offline, auth,
+# diverged remote) is reported loudly but never treated as fatal -- the
+# commit already happened and must stand regardless of network state.
+set +e
+branch="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$branch" = "HEAD" ]; then
+  echo "[post-commit] Detached HEAD -- skipping auto-push."
+else
+  push_output="$(git push origin "$branch" 2>&1)"
+  push_status=$?
+  echo "$push_output" | sed 's/^/[auto-push] /'
+  if [ "$push_status" -ne 0 ]; then
+    echo "[post-commit] WARNING: auto-push to origin/$branch failed (exit $push_status) -- commit is LOCAL ONLY, push manually: git push origin $branch" >&2
+  fi
+fi
+set -e
+# ------------------------------------------------------------------------------
+
 exit 0
