@@ -1,14 +1,12 @@
--- AI Companion v0.9.0 - Combat commands
 local u = require("commands.init")
 local queues = require("commands.queues")
 
 -- Detect nearby enemies
-commands.add_command("fac_world_enemies", nil, function(cmd)
+u.register("world_enemies", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s*(%d*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local radius = tonumber(args[2]) or 30
+    local radius = tonumber(args.radius) or 30
 
     local enemies = c.entity.surface.find_entities_filtered{
       position = c.entity.position,
@@ -43,12 +41,11 @@ commands.add_command("fac_world_enemies", nil, function(cmd)
 end)
 
 -- Start attacking enemies at position
-commands.add_command("fac_action_attack_start", nil, function(cmd)
+u.register("action_attack_start", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+(%-?%d+%.?%d*)%s+(%-?%d+%.?%d*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local x, y = tonumber(args[2]), tonumber(args[3])
+    local x, y = tonumber(args.x), tonumber(args.y)
     local result = queues.start_combat(id, {x = x, y = y})
     result.id = id
     u.json_response(result)
@@ -56,22 +53,19 @@ commands.add_command("fac_action_attack_start", nil, function(cmd)
 end)
 
 -- Check combat status
-commands.add_command("fac_action_attack_status", nil, function(cmd)
+u.register("action_attack_status", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)$", cmd.parameter)
-    local id = u.find_companion(args[1])
+    local id = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
     local status = queues.get_combat_status(id)
-    -- id passed as 2nd arg (2026-07-05): free queue-status attachment, see init.lua.
     u.json_response({id = id, status = status}, id)
   end)
 end)
 
 -- Stop attacking
-commands.add_command("fac_action_attack_stop", nil, function(cmd)
+u.register("action_attack_stop", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)$", cmd.parameter)
-    local id = u.find_companion(args[1])
+    local id = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
     local result = queues.stop_combat(id)
     u.json_response({id = id, stopped = result.stopped, kills = result.kills or 0})
@@ -79,12 +73,11 @@ commands.add_command("fac_action_attack_stop", nil, function(cmd)
 end)
 
 -- Toggle auto-defend mode
-commands.add_command("fac_action_defend", nil, function(cmd)
+u.register("action_defend", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+(%S+)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local mode = args[2]:lower()
+    local mode = args.radius:lower()
     if mode == "on" or mode == "true" or mode == "1" then
       c.auto_defend = true
       u.json_response({id = id, auto_defend = true})

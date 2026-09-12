@@ -1,202 +1,210 @@
-import { Socket } from "net";
-import { RCONConfig, RCONResponse } from "./types";
+import { Socket } from "node:net";
+import type { RCONConfig, RCONResponse } from "./types";
+import { validateRCONConfig } from "../config";
 
+const MAX_PACKET = 4 * 1024 * 1024;
+
+export function encodePacket(id: number, type: number, payload: string): Buffer {
+  const bytes = Buffer.from(payload, "utf8");
+  const packet = Buffer.alloc(bytes.length + 14);
+  packet.writeInt32LE(bytes.length + 10, 0);
+  packet.writeInt32LE(id, 4);
+  packet.writeInt32LE(type, 8);
+  bytes.copy(packet, 12);
+  return packet;
+}
+
+type Pending = {
+  id: number;
+  barrier?: number;
+  chunks: Buffer[];
+  bytes: number;
+  timer: ReturnType<typeof setTimeout>;
+  resolve: (value: string) => void;
+  reject: (reason: Error) => void;
+};
+
+/** One framed TCP reader and one serialized command queue, including response barriers. */
 export class RCONClient {
   private socket: Socket | null = null;
   private connected = false;
-  private config: RCONConfig;
-  private requestId = 1;
-  private commandTimeout = 5000; // 5 second timeout per command
+  private connecting: Promise<void> | null = null;
+  private buffer: Buffer = Buffer.alloc(0);
+  private pending: Pending | null = null;
+  private serial: Promise<unknown> = Promise.resolve();
+  private nextId = 1;
+  private closed = false;
 
-  constructor(config: RCONConfig) {
-    this.config = config;
+  constructor(
+    private readonly config: RCONConfig,
+    private readonly timeoutMs = 5000,
+  ) {
+    validateRCONConfig(config);
   }
 
   async connect(): Promise<void> {
-    return this.connectWithRetry(3);
-  }
-
-  private async connectWithRetry(maxRetries: number): Promise<void> {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        await this.connectOnce();
-        console.error(`✅ RCON connected on attempt ${attempt}`);
-        return;
-      } catch (error: any) {
-        const errorMsg = error?.message || String(error);
-        console.error(`❌ RCON connection attempt ${attempt} failed:`, errorMsg);
-
-        if (attempt === maxRetries) {
-          const isConnectionRefused = errorMsg.includes("ECONNREFUSED") || errorMsg.includes("connect");
-          if (isConnectionRefused) {
-            throw new Error(
-              `❌ Cannot connect to Factorio RCON (${this.config.host}:${this.config.port})\n\n` +
-              `SOLUTION: Start Factorio in Multiplayer mode\n` +
-              `1. Launch Factorio\n` +
-              `2. Go to: Multiplayer → Host New Game\n` +
-              `3. RCON will be automatically enabled\n\n` +
-              `RCON config should be in %APPDATA%\\Factorio\\config\\config.ini:\n` +
-              `  local-rcon-socket=127.0.0.1:34198\n` +
-              `  local-rcon-password=factorio\n\n` +
-              `If missing, add those lines and restart Factorio.\n\n` +
-              `Original error: ${errorMsg}`
-            );
-          }
-          throw new Error(`Failed to connect after ${maxRetries} attempts: ${errorMsg}`);
-        }
-
-        // Exponential backoff: 1s, 2s, 4s
-        await this.sleep(1000 * Math.pow(2, attempt - 1));
-      }
+    if (this.closed) throw new Error("RCON client stopped");
+    if (this.connected) return;
+    if (this.connecting) return this.connecting;
+    this.connecting = this.open();
+    try {
+      await this.connecting;
+    } finally {
+      this.connecting = null;
     }
   }
 
-  private async connectOnce(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.socket = new Socket();
-      this.socket.setTimeout(this.commandTimeout);
-
-      this.socket.on("connect", () => {
-        this.authenticate()
-          .then(() => {
-            this.connected = true;
-            resolve();
-          })
-          .catch(reject);
-      });
-
-      this.socket.on("error", (err) => {
-        this.connected = false;
-        reject(err);
-      });
-
-      this.socket.on("timeout", () => {
-        this.socket?.destroy();
-        reject(new Error("Socket timeout"));
-      });
-
-      this.socket.connect(this.config.port, this.config.host);
+  private async open(): Promise<void> {
+    const socket = new Socket();
+    this.socket = socket;
+    this.buffer = Buffer.alloc(0);
+    socket.setNoDelay(true);
+    socket.on("data", (data: Buffer) => {
+      if (this.socket === socket) this.receive(data);
     });
-  }
-
-  private async authenticate(): Promise<void> {
-    const packet = this.createPacket(3, this.config.password);
-    return new Promise((resolve, reject) => {
-      if (!this.socket) return reject(new Error("Socket not initialized"));
-
-      this.socket.write(packet);
-
-      const timeout = setTimeout(() => {
-        reject(new Error("Authentication timeout"));
-      }, this.commandTimeout);
-
-      this.socket.once("data", (data) => {
-        clearTimeout(timeout);
-        const response = this.parsePacket(data);
-        if (response.id === -1) {
-          reject(new Error("Authentication failed - invalid password"));
-        } else {
+    socket.on("error", (error) => {
+      if (this.socket === socket) this.fail(error);
+    });
+    socket.on("close", () => {
+      if (this.socket === socket) this.fail(new Error("Factorio RCON disconnected"));
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error("RCON connection timed out"));
+          socket.destroy();
+        }, this.timeoutMs);
+        socket.once("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        socket.once("close", () => {
+          clearTimeout(timer);
+          reject(new Error("RCON connection closed"));
+        });
+        socket.connect(this.config.port, this.config.host, () => {
+          clearTimeout(timer);
           resolve();
-        }
+        });
       });
-    });
+      await this.exchange(3, this.config.password, this.timeoutMs);
+      this.connected = true;
+    } catch (error) {
+      this.fail(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
   }
 
-  async sendCommand(command: string, timeoutMs?: number): Promise<RCONResponse> {
-    if (!this.connected) {
-      // Try to reconnect
+  async sendCommand(command: string, timeoutMs = this.timeoutMs): Promise<RCONResponse> {
+    if (!command.trim() || /[\r\n\0]/.test(command) || Buffer.byteLength(command) > 128 * 1024) {
+      return { success: false, data: "", error: "Invalid RCON command" };
+    }
+    const operation = this.serial.then(async (): Promise<RCONResponse> => {
       try {
         await this.connect();
+        return { success: true, data: await this.exchange(2, command, timeoutMs) };
       } catch (error) {
-        return { success: false, data: "", error: "Not connected and reconnect failed" };
-      }
-    }
-
-    const packet = this.createPacket(2, command);
-
-    return new Promise((resolve) => {
-      if (!this.socket) {
-        return resolve({ success: false, data: "", error: "Socket not initialized" });
-      }
-
-      let resolved = false;
-      const cleanup = () => {
-        if (this.socket) {
-          this.socket.removeListener("data", onData);
-          this.socket.removeListener("error", onError);
-        }
-        clearTimeout(timeout);
-      };
-
-      const finish = (result: RCONResponse) => {
-        if (!resolved) {
-          resolved = true;
-          cleanup();
-          resolve(result);
-        }
-      };
-
-      const timeout = setTimeout(() => {
-        finish({
+        return {
           success: false,
           data: "",
-          error: `Command timeout after ${timeoutMs || this.commandTimeout}ms`,
-        });
-      }, timeoutMs || this.commandTimeout);
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    });
+    this.serial = operation;
+    return operation;
+  }
 
-      const onData = (data: Buffer) => {
-        const response = this.parsePacket(data);
-        finish({ success: true, data: response.payload });
-      };
-
-      const onError = (err: Error) => {
-        this.connected = false;
-        finish({ success: false, data: "", error: err.message });
-      };
-
-      this.socket.once("data", onData);
-      this.socket.once("error", onError);
-      this.socket.write(packet);
+  private exchange(type: number, payload: string, timeoutMs: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const id = this.nextId++;
+      // Factorio processes commands in order; a harmless built-in command delimits replies.
+      // Factorio ignores empty commands and rejects Source RESPONSE_VALUE probes.
+      const barrier = type === 2 ? this.nextId++ : undefined;
+      const timer = setTimeout(
+        () =>
+          this.fail(
+            new Error(`RCON timeout after ${timeoutMs} ms; outcome unknown, command not retried`),
+          ),
+        timeoutMs,
+      );
+      this.pending = { id, barrier, chunks: [], bytes: 0, timer, resolve, reject };
+      if (!this.socket || this.socket.destroyed) {
+        this.fail(new Error("RCON socket closed"));
+        return;
+      }
+      this.socket.write(encodePacket(id, type, payload));
+      if (barrier !== undefined) this.socket.write(encodePacket(barrier, 2, "/version"));
     });
   }
 
-  private createPacket(type: number, payload: string): Buffer {
-    const id = this.requestId++;
-    const payloadBuffer = Buffer.from(payload, "utf8");
-    const length = payloadBuffer.length + 10;
-
-    const packet = Buffer.alloc(length + 4);
-    packet.writeInt32LE(length, 0);
-    packet.writeInt32LE(id, 4);
-    packet.writeInt32LE(type, 8);
-    payloadBuffer.copy(packet, 12);
-    packet.writeInt8(0, packet.length - 2);
-    packet.writeInt8(0, packet.length - 1);
-
-    return packet;
+  private receive(data: Buffer): void {
+    this.buffer = Buffer.concat([this.buffer, data]);
+    while (this.buffer.length >= 4) {
+      const length = this.buffer.readInt32LE(0);
+      if (length < 10 || length > MAX_PACKET) {
+        this.fail(new Error("Invalid RCON packet length"));
+        return;
+      }
+      if (this.buffer.length < length + 4) return;
+      const packet = this.buffer.subarray(0, length + 4);
+      this.buffer = this.buffer.subarray(length + 4);
+      if (packet[packet.length - 1] !== 0 || packet[packet.length - 2] !== 0) {
+        this.fail(new Error("Invalid RCON packet terminator"));
+        return;
+      }
+      const id = packet.readInt32LE(4);
+      const type = packet.readInt32LE(8);
+      const pending = this.pending;
+      if (!pending) continue;
+      if (type === 2 && id === -1) {
+        this.fail(new Error("RCON authentication failed: invalid password"));
+        return;
+      }
+      if (pending.barrier === undefined) {
+        if (id === pending.id && type === 2) this.finish("");
+      } else if (id === pending.barrier) {
+        this.finish(Buffer.concat(pending.chunks).toString("utf8"));
+      } else if (id === pending.id && type === 0) {
+        const body = packet.subarray(12, packet.length - 2);
+        pending.bytes += body.length;
+        if (pending.bytes > MAX_PACKET) {
+          this.fail(new Error("RCON response too large"));
+          return;
+        }
+        pending.chunks.push(body);
+      }
+    }
   }
 
-  private parsePacket(buffer: Buffer): { id: number; type: number; payload: string } {
-    const id = buffer.readInt32LE(4);
-    const type = buffer.readInt32LE(8);
-    const payload = buffer.toString("utf8", 12, buffer.length - 2);
-
-    return { id, type, payload };
+  private finish(data: string): void {
+    const pending = this.pending;
+    this.pending = null;
+    if (pending) {
+      clearTimeout(pending.timer);
+      pending.resolve(data);
+    }
   }
 
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  private fail(error: Error): void {
+    this.connected = false;
+    const pending = this.pending;
+    this.pending = null;
+    if (pending) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    const socket = this.socket;
+    this.socket = null;
+    socket?.destroy();
+    this.buffer = Buffer.alloc(0);
   }
 
   isConnected(): boolean {
     return this.connected;
   }
-
   async disconnect(): Promise<void> {
-    if (this.socket) {
-      this.socket.destroy();
-      this.socket = null;
-      this.connected = false;
-    }
+    this.closed = true;
+    this.fail(new Error("RCON client stopped"));
   }
 }

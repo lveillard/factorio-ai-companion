@@ -1,14 +1,12 @@
--- AI Companion v0.9.0 - Building commands
 local u = require("commands.init")
 local queues = require("commands.queues")
 
-commands.add_command("fac_building_can_place", nil, function(cmd)
+u.register("building_can_place", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+(%S+)%s+([%d.-]+)%s+([%d.-]+)%s*(%d*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local name, x, y = args[2], tonumber(args[3]), tonumber(args[4])
-    local dir = u.dir_map[tonumber(args[5]) or 0] or defines.direction.north
+    local name, x, y = args.entityName, tonumber(args.x), tonumber(args.y)
+    local dir = u.dir_map[tonumber(args.direction) or 0] or defines.direction.north
     if not x or not y then u.error_response("Invalid coordinates"); return end
     local dist = u.distance(c.entity.position, {x=x, y=y})
     if dist > (c.entity.reach_distance or 10) then u.json_response({id = id, can_place = false, reason = "Too far"}); return end
@@ -19,13 +17,12 @@ commands.add_command("fac_building_can_place", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_building_place", nil, function(cmd)
+u.register("building_place", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+(%S+)%s+([%d.-]+)%s+([%d.-]+)%s*(%d*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local name, x, y = args[2], tonumber(args[3]), tonumber(args[4])
-    local dir = u.dir_map[tonumber(args[5]) or 0] or defines.direction.north
+    local name, x, y = args.entityName, tonumber(args.x), tonumber(args.y)
+    local dir = u.dir_map[tonumber(args.direction) or 0] or defines.direction.north
     if not x or not y then u.error_response("Invalid coordinates"); return end
     local dist = u.distance(c.entity.position, {x=x, y=y})
     if dist > (c.entity.reach_distance or 10) then u.json_response({id = id, error = "Too far"}); return end
@@ -77,12 +74,11 @@ commands.add_command("fac_building_place", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_building_remove", nil, function(cmd)
+u.register("building_remove", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+(%S+)%s+([%d.-]+)%s+([%d.-]+)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local name, x, y = args[2], tonumber(args[3]), tonumber(args[4])
+    local name, x, y = args.entityName, tonumber(args.x), tonumber(args.y)
     if not x or not y then u.error_response("Invalid coordinates"); return end
     local es = c.entity.surface.find_entities_filtered{name = name, position = {x=x, y=y}, radius = 1, force = c.entity.force}
     if #es == 0 then u.json_response({id = id, error = "Not found"}); return end
@@ -102,16 +98,12 @@ commands.add_command("fac_building_remove", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_building_rotate", nil, function(cmd)
+u.register("building_rotate", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+([%d.-]+)%s+([%d.-]+)%s*(%d*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local x, y, dir = tonumber(args[2]), tonumber(args[3]), tonumber(args[4])
+    local x, y, dir = tonumber(args.x), tonumber(args.y), tonumber(args.direction)
     if not x or not y then u.error_response("Invalid coordinates"); return end
-    -- Same nearest-not-first tie-break fix as fac_inserter_set_filter below (found while
-    -- fixing that one, 2026-07-04): a bare [1]/first-match pick over a radius=1 query can
-    -- land on the wrong entity when several rotatable things are packed tightly together.
     local es = c.entity.surface.find_entities_filtered{position = {x=x, y=y}, radius = 1}
     local t, bd = nil, 1e18
     for _, e in ipairs(es) do
@@ -134,12 +126,11 @@ commands.add_command("fac_building_rotate", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_building_info", nil, function(cmd)
+u.register("building_info", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+([%d.-]+)%s+([%d.-]+)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local x, y = tonumber(args[2]), tonumber(args[3])
+    local x, y = tonumber(args.x), tonumber(args.y)
     if not x or not y then u.error_response("Invalid coordinates"); return end
     local es = c.entity.surface.find_entities_filtered{position = {x=x, y=y}, radius = 2}
     if #es == 0 then u.json_response({id = id, error = "Not found"}); return end
@@ -158,12 +149,11 @@ commands.add_command("fac_building_info", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_building_recipe", nil, function(cmd)
+u.register("building_recipe", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+(%S+)%s+([%d.-]+)%s+([%d.-]+)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local recipe, x, y = args[2], tonumber(args[3]), tonumber(args[4])
+    local recipe, x, y = args.recipe, tonumber(args.x), tonumber(args.y)
     if not x or not y then u.error_response("Invalid coordinates"); return end
     if u.distance(c.entity.position, {x=x, y=y}) > (c.entity.reach_distance or 10) then
       u.json_response({id = id, error = "Too far"}); return   -- must be in reach to set a recipe
@@ -176,16 +166,15 @@ commands.add_command("fac_building_recipe", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_building_fuel", nil, function(cmd)
+u.register("building_fuel", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+(%S+)%s*(%d*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local fuel, amount = args[2], tonumber(args[3]) or 5
+    local fuel, amount = args.fuelName, tonumber(args.count) or 5
     local inv = c.entity.get_inventory(defines.inventory.character_main)
     local have = inv.get_item_count(fuel)
     if have == 0 then u.json_response({id = id, error = "No " .. fuel}); return end
-    local es = c.entity.surface.find_entities_filtered{position = c.entity.position, radius = 3, type = {"furnace", "boiler", "burner-inserter", "car", "locomotive", "mining-drill"}}
+    local es = c.entity.surface.find_entities_filtered{position = c.entity.position, radius = 3, type = {"furnace", "boiler", "inserter", "car", "locomotive", "mining-drill"}}
     if #es == 0 then u.json_response({id = id, error = "No burner nearby"}); return end
     -- Fuel EVERY nearby burner (not just es[1], whose order is arbitrary): in a tight
     -- furnace row, fueling only the first leaves the others starved -> they stop smelting
@@ -204,24 +193,15 @@ commands.add_command("fac_building_fuel", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_building_empty", nil, function(cmd)
+u.register("building_empty", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+(%S+)%s*(%d*)%s*([%d.-]*)%s*([%d.-]*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local item, count = args[2], tonumber(args[3]) or 10
-    local pos = (tonumber(args[4]) and tonumber(args[5])) and {x = tonumber(args[4]), y = tonumber(args[5])} or c.entity.position
+    local item, count = args.itemName, tonumber(args.count) or 10
+    local pos = (tonumber(args.x) and tonumber(args.y)) and {x = tonumber(args.x), y = tonumber(args.y)} or c.entity.position
     if u.distance(c.entity.position, pos) > (c.entity.reach_distance or 10) then
       u.json_response({id = id, error = "Too far"}); return   -- must be in reach to extract (no action-at-a-distance)
     end
-    -- Extract ONLY from the entity CLOSEST to the target tile (not any in radius): in a
-    -- tight furnace row, collecting from the wrong furnace mismatches the fed one.
-    -- e.type ~= "resource" excludes raw ore/stone/coal patches -- live-caught 2026-07-04:
-    -- a chest/furnace placed adjacent to its own ore patch sits EXACTLY as close to `pos`
-    -- as the underlying resource tile (both d2=0.5 on integer-aligned placement), and the
-    -- resource entity (no inventory, always extracted=0) would silently win the tie
-    -- whenever Factorio's entity enumeration order happened to list it first --
-    -- non-deterministic flaky "extracted=0" despite the target container being full.
     local es = c.entity.surface.find_entities_filtered{position = pos, radius = 5}
     local target, bd = nil, 1e18
     for _, e in ipairs(es) do
@@ -250,13 +230,6 @@ commands.add_command("fac_building_empty", nil, function(cmd)
           if av > 0 then
             local rm = inv.remove{name = item, count = math.min(count - ext, av)}
             if rm > 0 then
-              -- insert()'s own return value MUST be used, not assumed to equal
-              -- `rm` (2026-07-18, same finding independently confirmed for
-              -- task_pool.lua's pull_from_nearby_container, which mirrors this
-              -- function's own idiom): a full companion inventory would
-              -- otherwise silently lose the un-placed remainder (already
-              -- removed here, never actually held) and over-report `extracted`
-              -- to the caller. Put back whatever didn't fit.
               local ins = c.entity.insert{name = item, count = rm}
               if ins < rm then inv.insert{name = item, count = rm - ins} end
               ext = ext + ins
@@ -270,13 +243,12 @@ commands.add_command("fac_building_empty", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_building_fill", nil, function(cmd)
+u.register("building_fill", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+(%S+)%s*(%d*)%s*([%d.-]*)%s*([%d.-]*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local item, count = args[2], tonumber(args[3]) or 10
-    local pos = (tonumber(args[4]) and tonumber(args[5])) and {x = tonumber(args[4]), y = tonumber(args[5])} or c.entity.position
+    local item, count = args.itemName, tonumber(args.count) or 10
+    local pos = (tonumber(args.x) and tonumber(args.y)) and {x = tonumber(args.x), y = tonumber(args.y)} or c.entity.position
     if u.distance(c.entity.position, pos) > (c.entity.reach_distance or 10) then
       u.json_response({id = id, error = "Too far"}); return   -- must be in reach to load a machine
     end
@@ -310,12 +282,11 @@ end)
 
 -- Realistic tick-based building placement
 -- Mine (destroy) any entity at position - works on crash site wrecks, decoratives, etc.
-commands.add_command("fac_mine_entity", nil, function(cmd)
+u.register("building_mine", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+([%d.-]+)%s+([%d.-]+)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local x, y = tonumber(args[2]), tonumber(args[3])
+    local x, y = tonumber(args.x), tonumber(args.y)
     if not x or not y then u.error_response("Invalid coordinates"); return end
     local es = c.entity.surface.find_entities_filtered{position = {x=x, y=y}, radius = 3}
     local target, tmin = nil, math.huge   -- mine the NEAREST entity, not the first arbitrary one
@@ -348,59 +319,38 @@ commands.add_command("fac_mine_entity", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_building_place_start", nil, function(cmd)
+u.register("building_place_start", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+(%S+)%s+(%-?%d+%.?%d*)%s+(%-?%d+%.?%d*)%s*(%S*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    -- Task-pool-ownership guard at the DIRECT command entry point (2026-07-08, task
-    -- #42) -- NOT inside queues.start_build itself, which task_pool.lua's own "place"
-    -- step also calls internally WHILE active_step[id] is legitimately set for that
-    -- very call; guarding inside start_build would reject the task pool's own use.
-    -- This only blocks an EXTERNAL (direct Python) build request from hijacking a
-    -- companion the task pool currently owns, mirroring fac_move_to's guard.
     if storage.active_step and storage.active_step[id] then
       u.error_response("companion busy with an active task-pool step")
       return
     end
-    local entity = args[2]
-    local x, y = tonumber(args[3]), tonumber(args[4])
-    local dir = args[5] ~= "" and defines.direction[args[5]] or defines.direction.north
+    local entity = args.entityName
+    local x, y = tonumber(args.x), tonumber(args.y)
+    local dir = args.direction ~= "" and defines.direction[args.direction] or defines.direction.north
     local result = queues.start_build(id, entity, {x = x, y = y}, dir)
     result.id = id
     u.json_response(result)
   end)
 end)
 
-commands.add_command("fac_building_place_status", nil, function(cmd)
+u.register("building_place_status", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)$", cmd.parameter)
-    local id = u.find_companion(args[1])
+    local id = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
     local status = queues.get_build_status(id)
-    -- id passed as 2nd arg (2026-07-05): free queue-status attachment, see init.lua.
     u.json_response({id = id, status = status}, id)
   end)
 end)
 
--- fac_inserter_set_filter <cid> <x> <y> <item_name> -- 2026-07-04, belt/inserter
--- automation plan Stage 0.1. Wraps LuaEntity.set_filter/get_filter (generalized in
--- 2.1 to a table-valued {name=, quality=, comparator=} ItemFilter, not a bare string --
--- confirmed live via scripts/probe_inserter_filter_capability.py, PASS: burner-inserter
--- reports filter_slot_count=5 and accepts set_filter(1, item_name) with a plain string).
--- Read back via get_filter to confirm the filter actually stuck (mirrors
--- fac_building_rotate's read-back style), not just that the pcall didn't error.
-commands.add_command("fac_inserter_set_filter", nil, function(cmd)
+u.register("inserter_set_filter", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+([%d.-]+)%s+([%d.-]+)%s+(%S+)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local x, y, item = tonumber(args[2]), tonumber(args[3]), args[4]
+    local x, y, item = tonumber(args.x), tonumber(args.y), args.item
     if not x or not y then u.error_response("Invalid coordinates"); return end
-    -- Pick the NEAREST inserter to (x,y), not just find_entities_filtered's [1] (engine
-    -- result order is not guaranteed nearest-first) -- a radius=1 query can overlap several
-    -- 1x1 inserters packed in a tight row, silently configuring the wrong one (cubic dev ai
-    -- bot, 2026-07-04: same tie-break class already fixed in fac_building_empty/_fill below).
     local es = c.entity.surface.find_entities_filtered{position = {x=x, y=y}, radius = 1, type = "inserter"}
     local t, bd = nil, 1e18
     for _, e in ipairs(es) do
@@ -425,17 +375,11 @@ commands.add_command("fac_inserter_set_filter", nil, function(cmd)
   end)
 end)
 
--- fac_belt_connect_start/<...>_status <cid> <from_x> <from_y> <to_x> <to_y> -- 2026-07-04,
--- belt/inserter automation plan Stage 0.2. See queues.lua's belt-connect section for the
--- full design rationale (model=WHAT, mod=HOW routing; narrower than the original plan
--- sketch -- no material/inserter placement here, see that comment block). Async like
--- fac_building_place_start/_status: mirrors that exact start+poll pattern.
-commands.add_command("fac_belt_connect_start", nil, function(cmd)
+u.register("belt_connect_start", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+([%d.-]+)%s+([%d.-]+)%s+([%d.-]+)%s+([%d.-]+)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local fx, fy, tx, ty = tonumber(args[2]), tonumber(args[3]), tonumber(args[4]), tonumber(args[5])
+    local fx, fy, tx, ty = tonumber(args.fromX), tonumber(args.fromY), tonumber(args.toX), tonumber(args.toY)
     if not (fx and fy and tx and ty) then u.error_response("Invalid coordinates"); return end
     local result = queues.start_belt_connect(id, {x = fx, y = fy}, {x = tx, y = ty})
     result.id = id
@@ -443,14 +387,12 @@ commands.add_command("fac_belt_connect_start", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_belt_connect_status", nil, function(cmd)
+u.register("belt_connect_status", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)$", cmd.parameter)
-    local id = u.find_companion(args[1])
+    local id = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
     local status = queues.get_belt_connect_status(id)
     status.id = id
-    -- id passed as 2nd arg (2026-07-05): free queue-status attachment, see init.lua.
     u.json_response(status, id)
   end)
 end)

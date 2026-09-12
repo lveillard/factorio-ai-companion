@@ -1,13 +1,11 @@
--- AI Companion v0.9.0 - Item commands
 local u = require("commands.init")
 local queues = require("commands.queues")
 
-commands.add_command("fac_item_craft", nil, function(cmd)
+u.register("item_craft", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+(%S+)%s*(%d*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local item, count = args[2], tonumber(args[3]) or 1
+    local item, count = args.recipe, tonumber(args.count) or 1
     local recipe = c.entity.force.recipes[item]
     if not recipe then u.json_response({id = id, error = "Recipe not found"}); return end
     if not recipe.enabled then u.json_response({id = id, error = "Not unlocked"}); return end
@@ -28,13 +26,12 @@ commands.add_command("fac_item_craft", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_item_pick", nil, function(cmd)
+u.register("item_pick", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s*(%S*)%s*(%d*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local filter = args[2] ~= "" and args[2] or nil
-    local radius = tonumber(args[3]) or 5
+    local filter = args.itemName ~= "" and args.itemName or nil
+    local radius = tonumber(args.radius) or 5
     local items = c.entity.surface.find_entities_filtered{type = "item-entity", position = c.entity.position, radius = radius}
     local picked = {}
     for _, item in ipairs(items) do
@@ -50,12 +47,11 @@ commands.add_command("fac_item_pick", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_item_recipes", nil, function(cmd)
+u.register("item_recipes", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s*(%S*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local filter = args[2]
+    local filter = args.filter
     local result = {}
     for name, recipe in pairs(c.entity.force.recipes) do
       if recipe.enabled then
@@ -75,34 +71,30 @@ commands.add_command("fac_item_recipes", nil, function(cmd)
 end)
 
 -- Realistic tick-based crafting
-commands.add_command("fac_item_craft_start", nil, function(cmd)
+u.register("item_craft_start", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+(%S+)%s*(%d*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local recipe = args[2]
-    local count = tonumber(args[3]) or 1
+    local recipe = args.recipe
+    local count = tonumber(args.count) or 1
     local result = queues.start_craft(id, recipe, count)
     result.id = id
     u.json_response(result)
   end)
 end)
 
-commands.add_command("fac_item_craft_status", nil, function(cmd)
+u.register("item_craft_status", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)$", cmd.parameter)
-    local id = u.find_companion(args[1])
+    local id = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
     local status = queues.get_craft_status(id)
-    -- id passed as 2nd arg (2026-07-05): free queue-status attachment, see init.lua.
     u.json_response({id = id, status = status}, id)
   end)
 end)
 
-commands.add_command("fac_item_craft_stop", nil, function(cmd)
+u.register("item_craft_stop", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)$", cmd.parameter)
-    local id = u.find_companion(args[1])
+    local id = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
     local result = queues.stop_craft(id)
     u.json_response({id = id, stopped = result.stopped, crafted = result.crafted or 0})

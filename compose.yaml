@@ -1,0 +1,21 @@
+services:
+  companion:
+    build: .
+    image: factorio-ai-companion:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3210:3210"
+    environment:
+      COMPANION_ACCESS_TOKEN: ${COMPANION_ACCESS_TOKEN:?Set a token of at least 32 characters}
+      COMPANION_PUBLIC_URL: ${COMPANION_PUBLIC_URL:-http://localhost:3210}
+      FACTORIO_HOST: ${FACTORIO_HOST:-host.docker.internal}
+      FACTORIO_RCON_PORT: ${FACTORIO_RCON_PORT:-34198}
+      FACTORIO_RCON_PASSWORD: ${FACTORIO_RCON_PASSWORD:-factorio}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - companion-data:/data
+    stop_grace_period: 20s
+volumes:
+  companion-data:

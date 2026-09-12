@@ -1,5 +1,5 @@
 pre-commit:
   commands:
-    validate-tools:
-      run: bun run scripts/validate-tools.ts
-      fail_text: "MCP tools don't match Lua commands 1:1. Run 'bun run scripts/validate-tools.ts' to see details."
+    check:
+      run: bun run check
+      fail_text: "Fix the reported TypeScript, generated-contract or regression-test failure before committing."

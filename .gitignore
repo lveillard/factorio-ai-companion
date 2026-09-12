@@ -4,3 +4,10 @@ node_modules/
 .DS_Store
 nul
 fle-reference
+
+.local/
+dist/
+coverage/
+*.zip
+.env.*
+!.env.example

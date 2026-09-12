@@ -1,94 +1,32 @@
-#!/usr/bin/env bun
-/**
- * Validate MCP tools match Lua commands 1:1
- * Run: bun run scripts/validate-tools.ts
- */
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import luaparse from "luaparse";
+import { COMMANDS } from "../src/mcp/schema";
+import { generate } from "./generate";
+import { PROJECT_ROOT } from "../src/config";
 
-import { readdir, readFile } from "fs/promises";
-import { join } from "path";
-import { TOOLS, SKILLS } from "../src/mcp/tools";
-
-const LUA_COMMANDS_DIR = "factorio-mod/commands";
-
-async function extractLuaCommands(): Promise<Set<string>> {
-  const commands = new Set<string>();
-  const files = await readdir(LUA_COMMANDS_DIR);
-
-  for (const file of files) {
-    if (!file.endsWith(".lua")) continue;
-    const content = await readFile(join(LUA_COMMANDS_DIR, file), "utf-8");
-
-    // Match: commands.add_command("fac_xxx", ...)
-    const matches = content.matchAll(/commands\.add_command\s*\(\s*"(fac_[^"]+)"/g);
-    for (const match of matches) {
-      commands.add(match[1]);
-    }
-  }
-
-  return commands;
-}
-
-function mcpToLua(mcpName: string): string {
-  // MCP tool "chat_say" -> Lua command "fac_chat_say"
-  return `fac_${mcpName}`;
-}
-
-function luaToMcp(luaName: string): string {
-  // Lua command "fac_chat_say" -> MCP tool "chat_say"
-  return luaName.replace(/^fac_/, "");
-}
-
-async function main() {
-  console.log("🔍 Validating MCP tools vs Lua commands...\n");
-
-  const luaCommands = await extractLuaCommands();
-  const mcpTools = new Set(Object.keys(TOOLS));
-  const skills = new Set(Object.keys(SKILLS));
-
-  // Special tools handled in TS (not 1:1 with Lua)
-  const specialTools = new Set(["companion_status", "companion_stop"]);
-
-  let errors = 0;
-
-  // Check: Each MCP tool has a Lua command
-  console.log("📋 MCP Tools -> Lua Commands:");
-  for (const mcpTool of mcpTools) {
-    const luaCmd = mcpToLua(mcpTool);
-    const exists = luaCommands.has(luaCmd);
-    const icon = exists ? "✅" : "❌";
-    if (!exists) {
-      console.log(`  ${icon} ${mcpTool} -> ${luaCmd} (MISSING IN LUA)`);
-      errors++;
-    }
-  }
-
-  // Check: Each Lua command has an MCP tool
-  console.log("\n📋 Lua Commands -> MCP Tools:");
-  for (const luaCmd of luaCommands) {
-    const mcpTool = luaToMcp(luaCmd);
-    const inTools = mcpTools.has(mcpTool);
-    const inSkills = skills.has(mcpTool);
-    const isSpecial = specialTools.has(mcpTool);
-
-    if (!inTools && !inSkills && !isSpecial) {
-      console.log(`  ❌ ${luaCmd} -> ${mcpTool} (NOT EXPOSED IN MCP)`);
-      errors++;
-    }
-  }
-
-  // Summary
-  console.log("\n📊 Summary:");
-  console.log(`  Lua commands: ${luaCommands.size}`);
-  console.log(`  MCP tools: ${mcpTools.size}`);
-  console.log(`  Skills: ${skills.size}`);
-  console.log(`  Special tools: ${specialTools.size}`);
-
-  if (errors === 0) {
-    console.log("\n✅ All tools are 1:1 mapped!");
-  } else {
-    console.log(`\n❌ Found ${errors} mismatches!`);
-    process.exit(1);
+generate(true);
+const directory = join(PROJECT_ROOT, "factorio-mod/commands");
+const handlers = new Set<string>();
+for (const file of readdirSync(directory).filter((file) => file.endsWith(".lua"))) {
+  const source = readFileSync(join(directory, file), "utf8");
+  luaparse.parse(source, { luaVersion: "5.2" });
+  for (const match of source.matchAll(/u\.register\("([^"]+)"/g)) {
+    if (handlers.has(match[1]!)) throw new Error(`Duplicate handler: ${match[1]}`);
+    handlers.add(match[1]!);
   }
 }
-
-main().catch(console.error);
+luaparse.parse(readFileSync(join(PROJECT_ROOT, "factorio-mod/control.lua"), "utf8"), {
+  luaVersion: "5.2",
+});
+for (const [name, definition] of Object.entries(COMMANDS)) {
+  if ((definition.execution === "game") !== handlers.has(name))
+    throw new Error(`Handler mismatch: ${name}`);
+  for (const before of definition.before || [])
+    if (!Object.hasOwn(COMMANDS, before)) throw new Error(`Unknown precondition ${before}`);
+}
+for (const handler of handlers)
+  if (!Object.hasOwn(COMMANDS, handler)) throw new Error(`Undocumented handler ${handler}`);
+console.log(
+  `${Object.keys(COMMANDS).length} commands: generated contract, Lua syntax and handlers verified.`,
+);

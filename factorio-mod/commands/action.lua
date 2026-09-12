@@ -1,12 +1,10 @@
--- AI Companion v0.7.0 - Action commands
 local u = require("commands.init")
 
-commands.add_command("fac_action_attack", nil, function(cmd)
+u.register("action_attack", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+([%d.-]+)%s+([%d.-]+)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local x, y = tonumber(args[2]), tonumber(args[3])
+    local x, y = tonumber(args.x), tonumber(args.y)
     if not x or not y then u.error_response("Invalid coordinates"); return end
 
     -- STOP WALKING - Clear walking queue so attack can take priority
@@ -26,12 +24,11 @@ commands.add_command("fac_action_attack", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_action_flee", nil, function(cmd)
+u.register("action_flee", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s*(%d*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local dist = tonumber(args[2]) or 30
+    local dist = tonumber(args.distance) or 30
     local pos = c.entity.position
     local enemies = c.entity.surface.find_entities_filtered{type = {"unit", "unit-spawner", "turret"}, position = pos, radius = 50, force = "enemy", limit = 5}
     if #enemies == 0 then u.json_response({id = id, fleeing = false, message = "No enemies"}); return end
@@ -44,24 +41,5 @@ commands.add_command("fac_action_flee", nil, function(cmd)
     local flee_pos = {x = pos.x + dx, y = pos.y + dy}
     storage.walking_queues[id] = {target = flee_pos}
     u.json_response({id = id, fleeing = true, enemies = #enemies, to = flee_pos})
-  end)
-end)
-
-commands.add_command("fac_action_patrol", nil, function(cmd)
-  u.safe_command(function()
-    local id = u.find_companion(cmd.parameter)
-    if not id then u.not_found(); return end
-    u.json_response({id = id, error = "Not implemented"})
-  end)
-end)
-
-commands.add_command("fac_action_wololo", nil, function(cmd)
-  u.safe_command(function()
-    local id = u.find_companion(cmd.parameter)
-    if not id then u.not_found(); return end
-    -- DISABLED: converting an enemy to the companion's force ("wololo") has NO game equivalent -- a
-    -- character can only deal with enemies by shooting them with real, consumed ammo (see
-    -- fac_action_attack / queues.start_combat). Reassigning entity.force is pure admin/cheat power.
-    u.json_response({id = id, wololo = false, error = "disabled (no game mechanic -- use combat + ammo)"})
   end)
 end)

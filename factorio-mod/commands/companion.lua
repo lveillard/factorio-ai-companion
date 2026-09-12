@@ -1,8 +1,8 @@
--- AI Companion v0.7.0 - Companion commands
+local lifecycle = require("commands.lifecycle")
 local u = require("commands.init")
 local queues = require("commands.queues")
 
-commands.add_command("fac_companion_list", nil, function(cmd)
+u.register("companion_list", function(args)
   u.safe_command(function()
     local list = {}
     for id, c in pairs(storage.companions) do
@@ -21,28 +21,13 @@ commands.add_command("fac_companion_list", nil, function(cmd)
   end)
 end)
 
--- Standard new-player starting kit (2026-07-06, Zdendys live-checked his own actual
--- Space Age crash-landing start and gave the exact, authoritative list: "at start
--- the character only has: wood=1, pistol=1, firearm-magazine=2, burner-mining-drill=1,
--- stone-furnace=1" -- base game's own freeplay.lua created_items() has DIFFERENT counts
--- (iron-plate=8, firearm-magazine=10) and includes iron-plate at all, but that script is
--- not what Space Age's crash-landing scenario actually uses -- this exact list is
--- Zdendys's direct, live observation, not a file read, and takes priority over it).
--- A companion spawned via surface.create_entity bypasses the normal on_player_created
--- flow entirely, so nothing else ever grants even this much.
-local STARTING_ITEMS = {
-  ["wood"] = 1,
-  ["pistol"] = 1,
-  ["firearm-magazine"] = 2,
-  ["burner-mining-drill"] = 1,
-  ["stone-furnace"] = 1,
-}
+local STARTING_ITEMS = u.settings.starting_items
 
-commands.add_command("fac_companion_spawn", nil, function(cmd)
+u.register("companion_spawn", function(args)
   u.safe_command(function()
-    local param = cmd.parameter or ""
-    local req_id = tonumber(param:match("id=(%d+)"))
-    local req_name = param:match("name=(%S+)")
+
+    local req_id = args.companionId
+    local req_name = args.name ~= "" and args.name or nil
     if req_id and storage.companions[req_id] then
       local c = storage.companions[req_id]
       if c.entity and c.entity.valid then u.json_response({status = "exists", id = req_id}); return end
@@ -79,10 +64,6 @@ commands.add_command("fac_companion_spawn", nil, function(cmd)
       game.print("[" .. name .. " spawned]", u.print_color(color))
       u.json_response({spawned = true, id = id, name = name})
     else
-      -- Diagnostic (2026-07-12, task #46): "Failed to spawn" carried zero forensic info --
-      -- surface.create_entity can fail on an unbuildable tile/collision at `pos` even after
-      -- find_non_colliding_position, so log what's actually there via the shared dump_context
-      -- helper (same pattern as queues.lua's build-collision diagnostic).
       local diag = u.dump_context(surface, pos)
       u.error_response(string.format(
         "Failed to spawn at (%.1f,%.1f) tile=%s -- nearby: %s",
@@ -91,27 +72,15 @@ commands.add_command("fac_companion_spawn", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_companion_disappear", nil, function(cmd)
+u.register("companion_disappear", function(args)
   u.safe_command(function()
-    local id, c = u.find_companion(cmd.parameter)
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
+    lifecycle.stop(id)
     local pos, surf = c.entity.position, c.entity.surface
     local dropped = {}
     local inv = c.entity.get_inventory(defines.inventory.character_main)
     if inv then
-      -- 2026-07-11: two bugs fixed together, found live while investigating a separate
-      -- issue (see factorio-ai's memory/mode_a_select_fail_investigation_2026_07_11.md,
-      -- Phase 2). Both were masked by the first one throwing before the second could ever
-      -- surface as its own distinct symptom:
-      -- (1) inv.get_contents() returns an ARRAY of {name=,count=,quality=} in current
-      --     Factorio, not a name->count dict -- the old `for name, count in pairs(...)`
-      --     bound `name` to the array INDEX and `count` to the whole item table.
-      -- (2) spill_item_stack's signature is a single table of named fields in current
-      --     Factorio (confirmed against lua-api.factorio.com), not 5 positional args --
-      --     the old call threw "Expected 1 argument but 5 were given" live, aborting this
-      --     command before it ever reached c.entity.destroy() or cleared
-      --     storage.companions[id], so a companion with ANY inventory could never be
-      --     cleanly disappeared via this command at all.
       for _, item in pairs(inv.get_contents()) do
         surf.spill_item_stack{position = pos, stack = {name = item.name, count = item.count,
                                quality = item.quality}, enable_looted = true, allow_belts = false}
@@ -124,7 +93,6 @@ commands.add_command("fac_companion_disappear", nil, function(cmd)
       storage.companion_markers[id] = nil
     end
     c.entity.destroy()
-    storage.context_clear_requests[id] = game.tick
     storage.companions[id] = nil
     storage.walking_queues[id] = nil
     game.print("[#" .. id .. " gone]", u.print_color(u.COLORS.system))
@@ -132,17 +100,9 @@ commands.add_command("fac_companion_disappear", nil, function(cmd)
   end)
 end)
 
--- Manual escape hatch (2026-07-11, Phase 3 of the mode-a-select-fail investigation --
--- see queues.lua's SELECT_FAIL_RESPAWN_STREAK/respawn_companion_entity comment for the
--- full Phase 2 evidence chain this is built on). Destroys the companion's current
--- character entity and respawns a fresh one under the SAME id, preserving position,
--- inventory, name and color -- the exact recovery Phase 2 live-verified works when a
--- companion's entity gets stuck in the "selected never sticks" state. Also usable as a
--- generic "this companion looks wedged, give it a fresh entity" operator command,
--- independent of the automatic gather()-side trigger.
-commands.add_command("fac_respawn_entity", nil, function(cmd)
+u.register("companion_respawn", function(args)
   u.safe_command(function()
-    local id = u.find_companion(cmd.parameter)
+    local id = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
     local result = queues.debug_respawn_entity(id)
     if result.error then u.json_response({id = id, error = result.error})
@@ -150,9 +110,9 @@ commands.add_command("fac_respawn_entity", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_companion_position", nil, function(cmd)
+u.register("companion_position", function(args)
   u.safe_command(function()
-    local id, c = u.find_companion(cmd.parameter)
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
     local pos, surf = c.entity.position, c.entity.surface
     local nearby = surf.find_entities_filtered{position = pos, radius = 20, limit = 30}
@@ -165,22 +125,17 @@ commands.add_command("fac_companion_position", nil, function(cmd)
         if d < 100 then players[#players + 1] = {name = p.name, distance = math.floor(d)} end
       end
     end
-    -- `id` passed as 2nd arg (2026-07-05): the companion's OWN position poll -- which
-    -- Python's wait_arrive() already calls every ~1-2s while blocking on movement -- now
-    -- also surfaces whatever OTHER async jobs (mine/build/craft/...) are still in flight
-    -- for this same companion, for free, no extra RCON round-trip needed to discover it.
     u.json_response({id = id, position = {x = math.floor(pos.x * 10) / 10, y = math.floor(pos.y * 10) / 10}, nearby = summary, players = players}, id)
   end)
 end)
 
-commands.add_command("fac_companion_health", nil, function(cmd)
+u.register("companion_health", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s*(%S*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
     local e = c.entity
     local r = {id = id, self = {health = e.health, max = e.max_health, pct = math.floor(e.health / e.max_health * 100)}}
-    local tgt = args[2] ~= "" and args[2] or nil
+    local tgt = args.target ~= "" and args.target or nil
     if tgt then
       local p = game.get_player(tgt)
       if p and p.valid and p.character then
@@ -198,12 +153,11 @@ commands.add_command("fac_companion_health", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_companion_inventory", nil, function(cmd)
+u.register("companion_inventory", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s*([%d.-]*)%s*([%d.-]*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local x, y = tonumber(args[2]), tonumber(args[3])
+    local x, y = tonumber(args.x), tonumber(args.y)
     if x and y then
       local es = c.entity.surface.find_entities_filtered{position = {x=x, y=y}, radius = 2}
       local t
@@ -231,32 +185,11 @@ commands.add_command("fac_companion_inventory", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_companion_stop_all", nil, function(cmd)
+u.register("companion_stop", function(args)
   u.safe_command(function()
-    local id, c = u.find_companion(cmd.parameter)
-    if not id then u.not_found(); return end
-    local stopped = {}
-    if storage.harvest_queues and storage.harvest_queues[id] then
-      storage.harvest_queues[id] = nil
-      stopped[#stopped + 1] = "harvest"
-    end
-    if storage.craft_queues and storage.craft_queues[id] then
-      storage.craft_queues[id] = nil
-      stopped[#stopped + 1] = "craft"
-    end
-    if storage.build_queues and storage.build_queues[id] then
-      storage.build_queues[id] = nil
-      stopped[#stopped + 1] = "build"
-    end
-    if storage.combat_queues and storage.combat_queues[id] then
-      storage.combat_queues[id] = nil
-      stopped[#stopped + 1] = "combat"
-    end
-    if storage.walking_queues and storage.walking_queues[id] then
-      storage.walking_queues[id] = nil
-      stopped[#stopped + 1] = "walk"
-    end
-    c.entity.walking_state = {walking = false}
+    local id = tonumber(args.companionId)
+    if not id then u.error_response("Invalid companion ID"); return end
+    local stopped = lifecycle.stop(id)
     u.json_response({id = id, stopped = stopped})
   end)
 end)

@@ -1,0 +1,8 @@
+{
+  "name": "ai-companion",
+  "title": "AI Companion",
+  "author": "lveillard",
+  "factorio_version": "2.0",
+  "description": "An AI second player with Codex chat, world observation and autonomous tasks.",
+  "dependencies": ["base >= 2.0.77"]
+}

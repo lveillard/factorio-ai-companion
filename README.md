@@ -1,202 +1,75 @@
 # Factorio AI Companion
 
-Bidirectional chat bridge between Factorio and Claude Code via MCP protocol.
+A guided second player for Factorio: chat in the game or browser, inspect nearby terrain and machines, and let companions mine, craft and build with carried materials.
 
-## Status: ✅ Phase 1 Complete - Chat Bridge Working!
+Requires **Bun 1.4.2+** and **Factorio 2.0.77+**. The included Codex app-server uses your ChatGPT subscription. Sign in through the dashboard using a browser or device code; Codex handles credential storage and renewal. No API key is required.
 
-Bidirectional chat working between Factorio and Claude Code via RCON.
+## Run locally
 
-## Quick Start Guide
-
-### 1. Install Dependencies
-
-```bash
-bun install
+```sh
+bun install --frozen-lockfile
+bun run build
+bun run mod:install
+bun run start
 ```
 
-### 2. Install Factorio Mod
+Open **http://127.0.0.1:3210**. Select **Conectar Codex**, finish the login, then **Iniciar compañero**. Send instructions in the browser or with `/fac consigue hierro` and `/fac 1 construye un horno` in Factorio. **Parar todo** interrupts Codex and cancels native companion work. Messages received while paused remain queued; a restart starts paused and does not replay interrupted actions.
 
-**Windows:**
-```bash
-xcopy /E /I factorio-mod "%APPDATA%\Factorio\mods\ai-companion"
-```
-
-**Linux/Mac:** See `factorio-mod/README.md`
-
-### 3. Configure RCON in Factorio
-
-Edit `%APPDATA%\Factorio\config\config.ini` and add these lines (if not already present):
+Enable RCON in Factorio's `config.ini`, under `[other]`:
 
 ```ini
 local-rcon-socket=127.0.0.1:34198
 local-rcon-password=factorio
 ```
 
-**Or use the hidden settings GUI:**
-1. In Factorio main menu, press **Ctrl+Alt** and click **Settings**
-2. Go to **"The rest"** tab
-3. Set `local-rcon-socket` to `127.0.0.1:34198`
-4. Set `local-rcon-password` to `factorio`
+Restart Factorio and host a multiplayer game. For a headless server, use `--rcon-port 34198 --rcon-password YOUR_PASSWORD`. Copy `.env.example` to `.env` to change the bridge's host, port and matching password. `bun run doctor` locates your game/mod directory and reports configuration without printing secrets.
 
-### 4. Start Factorio Multiplayer
+On a local setup, `bun run game:launch` backs up this config, applies the matching loopback RCON settings and opens Factorio. Close an existing Factorio instance first.
 
-**Important:** RCON only works in multiplayer mode (even if playing solo).
+`mod:install` backs up the previous companion mod and mod list under `.local/mod-backups`, then installs a fresh copy. Saves and other mods are preserved. `bun run mod:package` writes the versioned mod ZIP to `dist/`.
 
-1. Launch Factorio
-2. **Multiplayer** → **Host New Game** (or **Load Game**)
-3. Select your save and click **Play**
-4. RCON will be automatically enabled
+## Remote deployment
 
-### 5. Test RCON Connection (Optional)
-
-```bash
-bun run src/rcon/test-connection.ts
+```sh
+# In .env, set COMPANION_ACCESS_TOKEN to a random value of at least 32 characters.
+# Set FACTORIO_HOST to the game's hostname/IP, not the container's localhost.
+docker compose up --build -d
 ```
 
-Expected output:
-```
-✅ RCON connected on attempt 1
-✅ Connection successful!
-✅ RCON is working!
-```
+Compose exposes http://localhost:3210 on the host's loopback address. Use **device code login** in Docker: the browser OAuth callback otherwise targets localhost on the server. Credentials, conversation state and rotating logs persist in the `companion-data` volume.
 
-### 6. Start MCP Server
+For a game on the Docker host, set `FACTORIO_HOST=host.docker.internal` and make RCON reachable from that container. For cloud hosting, put the dashboard behind HTTPS, set `COMPANION_PUBLIC_URL` to its external origin and route the service through a private network. RCON itself is plaintext; keep it on a trusted network/VPN. The service requires a token when binding outside loopback and checks browser origins.
 
-```bash
-bun run src/index.ts
-```
+**MCP:** `/mcp` uses Streamable HTTP with `Authorization: Bearer <COMPANION_ACCESS_TOKEN>`. Locally, an automatically generated token is stored in `.local/server-token`. The web login cookie does not authenticate MCP. The current server implements protocol **2026-07-28** through MCP SDK **2.0.0** and explicitly rejects older protocol handshakes. `bun run mcp` provides the same modern protocol over stdio.
 
-Expected output:
-```
-🚀 Starting Factorio MCP Server...
-✅ RCON connected on attempt 1
-📡 RCON connected to Factorio
-✅ MCP server running on stdio
+MCP authentication grants access to game tools. The separate Codex/ChatGPT login authorizes the assistant's model usage; neither credential is a replacement for the other.
 
-💡 Server is ready! Claude Code can now use:
-   - get_companion_messages
-   - send_companion_message
-```
+## Sources of truth
 
-### 7. Connect Claude Code
+| File | Drives |
+| --- | --- |
+| `config/commands.json` | Named arguments, bounds, task step schemas, preconditions, MCP/Codex tools, browser forms and generated Lua dispatch contract |
+| `config/settings.ts` | Environment defaults, validation and generated `.env.example` |
+| `config/gameplay.json` | Queue kinds, observation/retention limits and gameplay tuning |
+| `config/mod.json` + `package.json` | Generated mod metadata and the single release version |
 
-The `.mcp.json` file in this project root configures Claude Code to use this server.
+Run `bun run generate` after changing configuration. Generated Lua and metadata are checked in so the mod can be packaged independently. Do not edit generated files. Lua handlers own game behavior; the dashboard, Codex host and MCP transport all share one serialized `GameBridge`.
 
-Claude Code will automatically start the MCP server when needed.
+World observations are bounded samples of charted and nearby visible terrain, with machine inventories, research, companion tasks and errors. They are structured telemetry, not a screenshot or a complete simulation of every map chunk. The most recent completed job remains inspectable until replaced/cancelled. Game chat retains a bounded mailbox; the server persists ingested messages and its cursor.
 
-### 8. Test It!
+## Development and checks
 
-**In Factorio chat:**
-```
-/companion Hello Claude! Can you help me?
+```sh
+bun run dev          # rebuild web/config on edits; restart the HTTP service
+bun run check        # TypeScript, generated contract/Lua syntax, RCON/MCP/session tests
+bun run test:web     # isolated browser smoke; Chrome on Windows, Chromium elsewhere
+bun run codex:smoke  # actual app-server protocol, no model turn or login required
+bun run test:game    # disposable headless world, real gameplay assertions
+bun run test:docker  # smoke the built image, including volume persistence
 ```
 
-**In Claude Code:**
-```
-Use the get_companion_messages tool
-```
+For browser tests on Linux, install Chromium with `bunx playwright install --with-deps chromium`; `PLAYWRIGHT_CHANNEL` selects another installed browser. Real-game tests require a local Factorio executable (`FACTORIO_BINARY`), use separate config/mods/ports and never load your saves. They intentionally enable Lua fixture commands only inside their disposable world.
 
-Claude will see:
-```json
-[
-  {
-    "player": "YourName",
-    "message": "Hello Claude! Can you help me?",
-    "tick": 12345
-  }
-]
-```
+The revival incorporates the game engine from [PR #2 by Zdendys79](https://github.com/lveillard/factorio-ai-companion/pull/2), reviewed at `323ce441b078bc0d44d96af81c1b28bec70b2d61`. The old Claude daemons, subprocess skills, positional RCON endpoints, obsolete context commands and automatic publishing hooks have been removed. Historical plans remain available in Git.
 
-**Claude can respond:**
-```
-Use send_companion_message with "Hello! I'm here to help!"
-```
-
-**In Factorio, you'll see:**
-```
-[AI Companion] Hello! I'm here to help!
-```
-
-## Tools Available
-
-### `get_companion_messages`
-Get unread messages from Factorio chat starting with `/companion`.
-
-**Returns:** Array of `{player, message, tick}`
-
-### `send_companion_message`
-Send a message to Factorio chat as AI Companion.
-
-**Input:** `{ message: string }`
-
-## Architecture
-
-```
-Factorio (Lua mod captures /companion chat)
-    ↕ RCON (TCP port 27000)
-Node.js MCP Server (Bun)
-    ↕ MCP Protocol (stdio)
-Claude Code (You!)
-```
-
-## What's Built
-
-- ✅ RCON client with retry logic
-- ✅ Chat message parser
-- ✅ Factorio Lua mod with FLE patterns
-- ✅ MCP server with 2 tools
-- ✅ Claude Code integration via .mcp.json
-
-## Phase 2 (Future)
-
-- AI-controlled character
-- Game state introspection
-- Automated building/crafting
-- Multi-agent coordination
-
-## Troubleshooting
-
-**"Connection failed"**
-- Make sure Factorio is running
-- Check "Start as server" is enabled
-- Verify RCON port is 27000
-- Verify RCON password is "factorio"
-
-**"No messages"**
-- Type `/companion <message>` in Factorio chat (not just "companion")
-- Check mod is enabled in Factorio → Mods menu
-- Restart Factorio after installing mod
-
-**"Command not found"**
-- Make sure Bun is installed: https://bun.sh
-- Run `bun --version` to verify
-
-## Development
-
-```bash
-# Run tests
-bun test
-
-# Test RCON connection
-bun run src/rcon/test-connection.ts
-
-# Start MCP server
-bun run src/index.ts
-```
-
-### Git hooks (required, one-time per clone)
-
-```bash
-git config core.hooksPath .githooks
-```
-
-`.githooks/pre-commit` (tracked in the repo, not `.git/hooks/`) auto-bumps
-`factorio-mod/info.json`'s version on any mod file change, and mechanically blocks
-commits that reintroduce known bug classes (e.g. `find_entities_filtered{...}[1]`
-picking the first match instead of the nearest, or a new `tick_*_queues` state
-machine with no `approach_deadline`). Bypass a false positive with
-`git commit --no-verify`.
-
-## Credits
-
-Inspired by [Factorio Learning Environment](https://github.com/JackHopkins/factorio-learning-environment) patterns and best practices.
+Codex integration follows the [official app-server protocol](https://developers.openai.com/codex/app-server/). Dependency upgrades should include the app-server smoke test and the modern MCP client tests.

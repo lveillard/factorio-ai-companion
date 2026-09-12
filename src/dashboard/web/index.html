@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Factorio · AI Companion</title>
+    <meta
+      name="description"
+      content="Tu segundo jugador de Factorio: chat, mundo y herramientas en directo."
+    />
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-icon" aria-hidden="true">F<span>+</span></span>
+        <div>FACTORIO <strong>COMPANION</strong><small id="version">Centro de control</small></div>
+      </div>
+      <div class="header-status">
+        <span id="stream-state" class="indicator">Conectando panel</span
+        ><button id="auth-button" class="quiet">Conectar Codex</button
+        ><button id="pause" class="danger">■ Parar todo</button>
+      </div>
+    </header>
+    <div id="notice" role="status" hidden></div>
+    <main>
+      <section class="status-strip" aria-label="Estado de la sesión">
+        <div>
+          <span class="eyebrow">FACTORIO</span><strong id="game-state">Esperando al juego</strong
+          ><small id="game-detail">Conectando RCON…</small>
+        </div>
+        <div>
+          <span class="eyebrow">CODEX</span><strong id="account-state">Sin sesión</strong
+          ><small id="account-detail">Conecta tu cuenta de ChatGPT</small>
+        </div>
+        <div>
+          <span class="eyebrow">COMPAÑERO</span><strong id="agent-state">En pausa</strong
+          ><small id="agent-detail">Tú marcas el siguiente paso</small>
+        </div>
+        <div class="session-actions">
+          <select id="model" aria-label="Modelo de Codex">
+            <option value="">Modelo predeterminado</option></select
+          ><button id="resume" class="primary">
+            Iniciar compañero <span aria-hidden="true">↗</span>
+          </button>
+        </div>
+      </section>
+      <div class="workspace">
+        <section class="conversation panel">
+          <div class="panel-heading">
+            <h1>Trabajad juntos.</h1>
+            <button id="new-chat" class="quiet">Nueva conversación</button>
+          </div>
+          <nav class="tabs" aria-label="Vistas">
+            <button class="active" data-tab="chat" aria-selected="true">Conversación</button
+            ><button data-tab="tools" aria-selected="false">Comandos</button
+            ><button data-tab="logs" aria-selected="false">
+              Registro <span id="log-count">0</span>
+            </button>
+          </nav>
+          <div id="tab-chat" class="tab-content">
+            <div id="messages" role="log" aria-label="Conversación">
+              <div class="empty-state">
+                <span class="empty-symbol" aria-hidden="true">↗</span>
+                <h2>Una fábrica. Dos jugadores.</h2>
+                <p>
+                  Conecta Codex e inicia el compañero. Puedes hablar aquí o escribir
+                  <code>/fac</code> en el chat de Factorio.
+                </p>
+                <div class="suggestions">
+                  <button data-prompt="¿Qué ves a nuestro alrededor y qué convendría hacer ahora?">
+                    ¿Qué ves alrededor?</button
+                  ><button
+                    data-prompt="Crea un compañero y ayúdame a conseguir hierro. Primero revisa el inventario y los recursos cercanos."
+                  >
+                    Vamos a por hierro
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div id="live-response" class="live-response" aria-live="polite" hidden></div>
+            <form id="chat-form" class="composer">
+              <label class="sr-only" for="message">Mensaje al compañero</label
+              ><textarea
+                id="message"
+                rows="2"
+                maxlength="8000"
+                placeholder="Dale una tarea, pregúntale algo o cambia el plan…"
+                required
+              ></textarea>
+              <div class="composer-footer">
+                <label
+                  >Para
+                  <select id="target">
+                    <option value="0">Coordinador</option>
+                  </select></label
+                ><span id="queue-hint">Enter para enviar</span
+                ><button type="submit" class="primary">Enviar ↑</button>
+              </div>
+            </form>
+          </div>
+          <div id="tab-tools" class="tab-content" hidden>
+            <div class="tools-intro">
+              <h2>Herramientas del compañero</h2>
+              <p>
+                El mismo catálogo que usa Codex. Cada ejecución muestra sus parámetros y el
+                resultado real.
+              </p>
+            </div>
+            <form id="tool-form">
+              <label for="tool-select">Comando</label
+              ><select id="tool-select"></select>
+              <p id="tool-description"></p>
+              <div id="tool-fields"></div>
+              <button type="submit" class="primary">Ejecutar comando</button>
+            </form>
+            <pre id="tool-result" tabindex="0">Selecciona una herramienta para inspeccionarla.</pre>
+          </div>
+          <div id="tab-logs" class="tab-content" hidden>
+            <div class="log-toolbar">
+              <label for="log-filter">Filtrar</label
+              ><input id="log-filter" placeholder="error, gather, move…" /><button
+                id="export-logs"
+                class="quiet"
+              >
+                Descargar registro
+              </button>
+            </div>
+            <div id="logs"></div>
+          </div>
+        </section>
+        <aside class="world-column">
+          <section class="panel world-panel">
+            <div class="panel-heading">
+              <div>
+                <span class="eyebrow">OBSERVACIÓN EN DIRECTO</span>
+                <h2 id="surface">El mundo</h2>
+              </div>
+              <select id="focus" aria-label="Centrar observación">
+                <option value="0">Jugador / inicio</option>
+              </select>
+            </div>
+            <div class="map-wrap">
+              <canvas
+                id="world-map"
+                aria-label="Mapa de entidades observadas; selecciona una para inspeccionarla"
+                tabindex="0"
+              ></canvas>
+              <p id="map-empty">Abre una partida con el mod para ver el mundo.</p>
+              <span id="map-coordinate" class="map-coordinate">Sin observación</span>
+            </div>
+            <div class="map-legend">
+              <span class="legend machine">Fábrica</span
+              ><span class="legend resource">Recursos</span
+              ><span class="legend enemy">Enemigos</span
+              ><span class="legend player">Jugadores</span>
+            </div>
+            <p class="map-note" id="map-note">Muestra acotada del terreno explorado.</p>
+            <details id="entity-inspector" hidden>
+              <summary>Entidad seleccionada</summary>
+              <pre id="entity-data"></pre>
+            </details>
+          </section>
+          <section class="panel roster-panel">
+            <div class="panel-heading">
+              <h2>En el equipo</h2>
+              <button id="spawn" class="quiet">+ Compañero</button>
+            </div>
+            <div id="companions"><p class="muted">Aún no hay compañeros en esta partida.</p></div>
+          </section>
+          <section class="panel research-panel">
+            <div class="panel-heading">
+              <h2>Investigación</h2>
+              <span id="research-percent" class="muted">—</span>
+            </div>
+            <strong id="research-name">Sin datos del juego</strong
+            ><progress id="research-progress" max="1" value="0"></progress>
+          </section>
+          <details class="panel connection-panel">
+            <summary>Conexiones y diagnóstico</summary>
+            <dl>
+              <dt>RCON</dt>
+              <dd id="rcon-address">—</dd>
+              <dt>MCP remoto</dt>
+              <dd id="mcp-address">—</dd>
+              <dt>Última observación</dt>
+              <dd id="observed-at">—</dd>
+            </dl>
+            <p class="muted">
+              MCP usa un token Bearer del servidor. Codex gestiona por separado la sesión de
+              ChatGPT.
+            </p>
+            <div id="game-errors"></div>
+          </details>
+        </aside>
+      </div>
+    </main>
+    <dialog id="auth-dialog">
+      <form method="dialog"><button class="dialog-close quiet" aria-label="Cerrar">×</button></form>
+      <span class="eyebrow">TU SUSCRIPCIÓN DE CHATGPT</span>
+      <h2>Conecta Codex</h2>
+      <p>Elige cómo iniciar sesión. Codex guarda y renueva las credenciales en este servidor.</p>
+      <div class="auth-actions">
+        <button id="device-login" class="primary">Usar código de dispositivo</button
+        ><button id="browser-login" class="quiet">Login en este ordenador</button>
+      </div>
+      <div id="auth-progress" hidden>
+        <p id="auth-instruction"></p>
+        <strong id="device-code"></strong
+        ><a id="auth-link" class="primary link-button" target="_blank" rel="noopener noreferrer"
+          >Abrir página de acceso ↗</a
+        ><button id="cancel-login" class="quiet">Cancelar login</button>
+      </div>
+      <div class="auth-footer">
+        <button id="refresh-auth" class="quiet">Comprobar sesión</button
+        ><button id="logout" class="quiet">Cerrar sesión de Codex</button>
+      </div>
+      <p id="auth-error" role="alert"></p>
+    </dialog>
+    <dialog id="unlock-dialog">
+      <h2>Acceder al servidor</h2>
+      <p>Introduce el token configurado en el servidor remoto.</p>
+      <form id="unlock-form">
+        <label for="access-token">Token de acceso</label
+        ><input id="access-token" type="password" autocomplete="off" required /><button
+          class="primary"
+          type="submit"
+        >
+          Acceder
+        </button>
+      </form>
+      <p id="unlock-error" role="alert"></p>
+    </dialog>
+  </body>
+</html>
