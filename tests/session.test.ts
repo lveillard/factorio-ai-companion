@@ -14,10 +14,12 @@ class FakeCodex extends EventEmitter {
   ready = true;
   workspace = ".";
   calls: string[] = [];
+  requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
   turnStart?: () => Promise<unknown>;
   async start() {}
-  async request(method: string) {
+  async request(method: string, params?: Record<string, unknown>) {
     this.calls.push(method);
+    this.requests.push({ method, params });
     if (method === "account/read") return { account: { type: "chatgpt" } };
     if (method === "model/list") return { data: [] };
     if (method === "thread/start") return { thread: { id: "thread1" } };
@@ -266,6 +268,95 @@ async function pendingJob(f: ReturnType<typeof fixture>) {
   expect(f.session.status().messages[0]!.status).toBe("waiting");
   return snapshot;
 }
+
+test("manual controls replace pending work only for the addressed companion", async () => {
+  const f = fixture();
+  try {
+    await pendingJob(f);
+    const original = f.session.status().messages[0]!;
+    original.companionId = 0;
+    await f.session.manualTool("gather_status", { companionId: 1 });
+    await f.session.manualTool("companion_spawn", { companionId: 2, name: "Ada" });
+    await f.session.manualTool("companion_stop", { companionId: 2 });
+    expect(original.status).toBe("waiting");
+    await f.session.manualTool("companion_stop", { companionId: 1 });
+    expect(original.status).toBe("cancelled");
+    await f.session["poll"]();
+    expect(f.codex.calls.filter((m) => m === "turn/start")).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("manual stop still reaches the game when Codex interruption fails", async () => {
+  const f = fixture();
+  try {
+    f.session.enqueue("Mine iron", 1);
+    await f.session.resume();
+    f.codex.request = async () => {
+      throw new Error("Codex disconnected");
+    };
+    expect((await f.session.manualTool("companion_stop", { companionId: 1 })).success).toBe(true);
+    expect(f.session.status().messages[0]!.status).toBe("cancelled");
+    expect(f.session.status().busy).toBe(false);
+    expect(
+      f.events.recent.some(
+        (e) =>
+          e.type === "tool.completed" && (e.data as { name: string }).name === "companion_stop",
+      ),
+    ).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+test("manual stop cancels a queued turn while observation is still in flight", async () => {
+  const f = fixture();
+  try {
+    const snapshot = await f.game.observe();
+    let observed!: () => void;
+    f.game.observe = () =>
+      new Promise((resolve) => {
+        observed = () => resolve(snapshot);
+      });
+    f.session.enqueue("Mine iron", 1);
+    const starting = f.session.resume();
+    while (!observed) await Bun.sleep(1);
+    await f.session.manualTool("companion_stop", { companionId: 1 });
+    observed();
+    await starting;
+    expect(f.session.status().messages[0]!.status).toBe("cancelled");
+    expect(f.codex.calls).not.toContain("turn/start");
+  } finally {
+    await f.close();
+  }
+});
+
+test("a turn observes its target companion and sends compact terrain with full state", async () => {
+  const f = fixture();
+  try {
+    const snapshot = await f.game.observe();
+    snapshot.center = { x: 0, y: 0 };
+    snapshot.entities = [{ name: "coal", type: "resource", amount: 30, position: { x: 2, y: 3 } }];
+    let observed: number | undefined;
+    f.game.observe = async (id) => {
+      observed = id;
+      return snapshot;
+    };
+    f.session.focus = 2;
+    f.session.enqueue("Mine coal", 1);
+    await f.session.resume();
+    expect(observed).toBe(1);
+    const input = f.codex.requests.find((r) => r.method === "turn/start")!.params!.input as Array<{
+      text: string;
+    }>;
+    expect(input[0]!.text).toContain('"sampled_amount":30');
+    expect(input[0]!.text).toContain('"detail_tool":"world_observe"');
+    expect(snapshot.entities).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
 test("questions preserve the pending objective; redirecting that companion replaces it", async () => {
   const f = fixture();
   try {

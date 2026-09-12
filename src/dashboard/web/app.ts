@@ -1,6 +1,7 @@
 import type { CompanionSession } from "../../runtime/session";
 import type { GameBridge, WorldSnapshot } from "../../runtime/game";
 import type { AppEvent } from "../../runtime/events";
+import ui from "../../../config/dashboard.json";
 
 type Entity = {
   name: string;
@@ -69,10 +70,31 @@ function action(id: string, callback: () => Promise<unknown>) {
       notice(String(error));
     } finally {
       button.disabled = false;
+      renderState();
     }
   });
 }
 const array = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
+const itemName = (name: string) => name.replaceAll("-", " ").replace(/^./, (c) => c.toUpperCase());
+let miningCompanion = 0;
+let pendingSelection: number | null = null;
+async function tool(name: string, args: Record<string, unknown>) {
+  notice("");
+  const result = await api<{ success: boolean; error?: string; data?: unknown }>("tools/call", {
+    name,
+    args,
+  });
+  if (!result.success) throw new Error(result.error || "Action failed");
+  return result.data;
+}
+async function selectCompanion(id: number) {
+  $<HTMLSelectElement>("target").value = String(id);
+  $<HTMLSelectElement>("focus").value = String(id);
+  await api("settings", { focus: id });
+  renderCompanions();
+  document.querySelector<HTMLButtonElement>('[data-tab="chat"]')?.click();
+  $("message").focus();
+}
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
 const time = (value: string) =>
   new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -90,18 +112,25 @@ function renderMessages() {
     const item = node("article", undefined, `message ${message.role}`);
     const meta = node("div", undefined, "message-meta");
     meta.append(
-      node("strong", message.role === "assistant" ? "Codex" : message.player || "Tú"),
+      node(
+        "strong",
+        message.role === "assistant"
+          ? array<{ id: number; name: string }>(state.game.snapshot?.companions).find(
+              (c) => c.id === message.companionId,
+            )?.name || "Codex"
+          : message.player || "You",
+      ),
       node("span", message.source === "game" ? "Factorio" : "Panel"),
       node("time", time(message.at)),
     );
     item.append(meta, node("div", message.text, "message-text"));
     if (message.status && message.status !== "completed") {
       const labels = {
-        queued: "En cola",
-        running: "En curso",
-        waiting: "Trabajando en el juego · continuará al terminar",
-        failed: "No completado",
-        cancelled: "Cancelado",
+        queued: "Queued",
+        running: "Running",
+        waiting: "Working in game",
+        failed: "Failed",
+        cancelled: "Cancelled",
       };
       item.append(
         node(
@@ -122,13 +151,13 @@ function renderState() {
     live.clear();
     $("live-response").hidden = true;
   }
-  $("version").textContent = `v${state.version} · Centro de control`;
+  $("version").textContent = `v${state.version}`;
   const world = state.game.snapshot;
   $("game-state").textContent = state.game.connected
     ? world?.paused
-      ? "Partida pausada"
-      : "Conectado"
-    : "Esperando al juego";
+      ? "Game paused"
+      : "Connected"
+    : "Disconnected";
   $("game-detail").textContent =
     state.game.error ||
     (world
@@ -136,40 +165,39 @@ function renderState() {
       : `${state.rcon.host}:${state.rcon.port}`);
   $("account-state").textContent = state.agent.account
     ? `ChatGPT ${state.agent.account.planType || ""}`
-    : "Sin sesión";
-  $("account-detail").textContent = state.agent.account?.email || "Conecta tu cuenta de ChatGPT";
-  $("auth-button").textContent = state.agent.account ? "Cuenta de Codex" : "Conectar Codex";
+    : "Signed out";
+  $("account-detail").textContent = state.agent.account?.email || "Sign in with ChatGPT";
+  $("auth-button").textContent = "Settings";
   $("agent-state").textContent = state.agent.busy
-    ? "Trabajando"
+    ? "Working"
     : state.agent.enabled
       ? state.agent.waiting
-        ? "Tarea en el juego"
-        : "Escuchando"
-      : "En pausa";
+        ? "Working in game"
+        : "Listening"
+      : "Paused";
   $("agent-detail").textContent =
     state.agent.error ||
     (state.agent.queued
-      ? `${state.agent.queued} mensaje(s) en cola`
+      ? `${state.agent.queued} queued`
       : state.agent.waiting
-        ? "Codex revisará el resultado cuando acabe"
-        : state.agent.enabled
-          ? "Listo para tus indicaciones"
-          : "Inicia Codex para procesar los mensajes");
-  $("resume").textContent = state.agent.enabled ? "Codex activo ✓" : "Iniciar Codex ↗";
+        ? "Checking when work finishes"
+        : "");
+  $("resume").textContent = state.agent.enabled ? "Chat active" : "Start chat";
   $<HTMLButtonElement>("resume").disabled = state.agent.enabled;
-  $("queue-hint").textContent = state.agent.enabled
-    ? "Enter para enviar"
-    : "Codex en pausa · pulsa Iniciar Codex para procesar la cola";
+  $("queue-hint").textContent = state.agent.enabled ? "Enter to send" : "Paused";
+  $("send-message").textContent =
+    !state.agent.enabled && state.agent.account ? "Send & start" : "Send";
+  $<HTMLButtonElement>("spawn").disabled = !state.game.connected;
   $("rcon-address").textContent = `${state.rcon.host}:${state.rcon.port}`;
   $("mcp-address").textContent = state.mcp.url;
   $("observed-at").textContent = state.game.observedAt
     ? time(state.game.observedAt)
-    : "Todavía no hay datos";
+    : "No data yet";
   const models = array<{ id: string; model: string; displayName: string }>(state.agent.models);
   const modelSelect = $<HTMLSelectElement>("model");
   if (modelSelect.options.length !== models.length + 1) {
     modelSelect.replaceChildren(
-      new Option("Modelo predeterminado", ""),
+      new Option("Default model", ""),
       ...models.map(
         (model) =>
           new Option(model.displayName || model.model || model.id, model.model || model.id),
@@ -181,11 +209,10 @@ function renderState() {
     $("surface").textContent = world.surface;
     $("map-empty").hidden = true;
     $("map-coordinate").textContent =
-      `x ${world.center.x.toFixed(1)}  y ${world.center.y.toFixed(1)}  ·  radio ${world.radius}`;
-    $("map-note").textContent =
-      `${array(world.entities).length} entidades observadas${world.entities_truncated ? ` de ${world.entities_total} (muestra limitada)` : ""} · entorno cercano y terreno explorado${world.water_truncated ? " · agua parcial" : ""}`;
+      `x ${world.center.x.toFixed(1)}  y ${world.center.y.toFixed(1)}  ·  radius ${world.radius}`;
+    $("map-note").textContent = world.entities_truncated ? "Partial view" : "";
     const research = world.research as { name: string; progress: number } | undefined;
-    $("research-name").textContent = research?.name || "Sin investigación activa";
+    $("research-name").textContent = research?.name || "No active research";
     $("research-percent").textContent = research ? `${Math.round(research.progress * 100)}%` : "—";
     $<HTMLProgressElement>("research-progress").value = research?.progress || 0;
     const errors = array<{ error: string; context?: string }>(world.errors);
@@ -218,47 +245,95 @@ function renderCompanions() {
       const select = $<HTMLSelectElement>(id);
       const value = select.value;
       select.replaceChildren(
-        new Option(id === "target" ? "Coordinador" : "Jugador / inicio", "0"),
-        ...companions.map((c) => new Option(`${c.name || "Compañero"} · #${c.id}`, String(c.id))),
+        new Option(id === "target" ? "Everyone" : "Player", "0"),
+        ...companions.map((c) => new Option(c.name || `Companion ${c.id}`, String(c.id))),
       );
       select.value = companions.some((c) => String(c.id) === value) ? value : "0";
     }
   }
   const roster = $("companions");
+  $("companion-count").textContent = String(companions.length);
+  if (pendingSelection !== null && companions.some((c) => c.id === pendingSelection)) {
+    const id = pendingSelection;
+    pendingSelection = null;
+    $<HTMLSelectElement>("target").value = String(id);
+    $<HTMLSelectElement>("focus").value = String(id);
+    void api("settings", { focus: id }).catch((error) => notice(String(error)));
+  }
+  const selected = Number($<HTMLSelectElement>("target").value);
+  $("chat-title").textContent = selected
+    ? `Chat with ${companions.find((c) => c.id === selected)?.name || "companion"}`
+    : "Chat";
   if (!companions.length) {
-    roster.replaceChildren(node("p", "Aún no hay compañeros en esta partida.", "muted"));
+    roster.replaceChildren(
+      node(
+        "p",
+        state.game.connected ? "Add your first companion." : "Connect a game to add companions.",
+        "muted",
+      ),
+    );
     return;
   }
   roster.replaceChildren(
     ...companions.map((c) => {
       const card = node("div", undefined, "companion-card");
+      card.classList.toggle("selected", c.id === selected);
+      card.dataset.companion = String(c.id);
       const title = node("div", undefined, "companion-title");
-      const stop = node("button", "Parar");
+      const stop = node("button", "Stop");
       stop.addEventListener("click", () => {
-        void api("tools/call", { name: "companion_stop", args: { companionId: c.id } }).catch(
-          (error) => notice(String(error)),
-        );
+        void tool("companion_stop", { companionId: c.id })
+          .then(() => refresh())
+          .catch((error) => notice(String(error)));
       });
-      title.append(node("strong", c.name || `Compañero #${c.id}`), stop);
+      const select = node("button", c.name || `Companion ${c.id}`, "companion-select");
+      select.setAttribute("aria-label", `Select ${c.name || c.id}`);
+      select.setAttribute("aria-pressed", String(c.id === selected));
+      select.addEventListener("click", () => {
+        void selectCompanion(c.id).catch((error) => notice(String(error)));
+      });
+      title.append(select);
       const running = Object.entries(c.queues || {})
         .filter(([, queue]) => queue.active)
-        .map(([name, queue]) => `${name}${queue.state ? ` (${queue.state})` : ""}`);
+        .map(([name]) => (ui.jobs as Record<string, string>)[name] || "Working");
       card.append(
         title,
         node(
           "p",
           c.dead
-            ? "Sin vida"
-            : `${Math.round(c.health || 0)}/${Math.round(c.max_health || 0)} PV · ${running.join(", ") || "Disponible"}`,
+            ? "Dead"
+            : `${running.join(", ") || "Idle"}${c.health === undefined ? "" : ` · ${Math.round(c.health)} HP`}`,
         ),
       );
       const inventory = node("div", undefined, "inventory");
       const items = array<{ name: string; count: number }>(c.inventory);
       inventory.append(
-        ...items.slice(0, 10).map((item) => node("span", `${item.name} ×${item.count}`)),
+        ...items.slice(0, 4).map((item) => node("span", `${itemName(item.name)} ×${item.count}`)),
       );
-      if (items.length > 10) inventory.append(node("span", `+${items.length - 10} tipos`));
+      if (items.length > 4) inventory.append(node("span", `+${items.length - 4}`));
       card.append(inventory);
+      const actions = node("div", undefined, "companion-actions");
+      const mine = node("button", "Mine");
+      mine.addEventListener("click", () => {
+        miningCompanion = c.id;
+        $("mine-title").textContent = `${c.name || "Companion"} · Mine`;
+        $("mine-error").textContent = "";
+        $<HTMLDialogElement>("mine-dialog").showModal();
+      });
+      const follow = node("button", "Follow me");
+      const player = array<{ name: string; connected?: boolean }>(
+        state.game.snapshot?.players,
+      ).find((p) => p.connected);
+      follow.disabled = !player || !state.game.connected || !!c.dead;
+      follow.addEventListener("click", () => {
+        if (player)
+          void tool("move_follow", { companionId: c.id, playerName: player.name })
+            .then(() => refresh())
+            .catch((error) => notice(String(error)));
+      });
+      mine.disabled = stop.disabled = !state.game.connected || !!c.dead;
+      actions.append(mine, follow, stop);
+      card.append(actions);
       return card;
     }),
   );
@@ -419,12 +494,12 @@ function connectEvents() {
   eventSource?.close();
   eventSource = new EventSource("/api/events");
   eventSource.onopen = () => {
-    $("stream-state").textContent = "Panel conectado";
+    $("stream-state").textContent = "Live";
     $("stream-state").classList.add("online");
     void refresh().catch((error) => notice(String(error)));
   };
   eventSource.onerror = () => {
-    $("stream-state").textContent = "Reconectando panel…";
+    $("stream-state").textContent = "Reconnecting…";
     $("stream-state").classList.remove("online");
   };
   eventSource.onmessage = ({ data }) => {
@@ -459,7 +534,7 @@ function connectEvents() {
         if (value.success) {
           $<HTMLDialogElement>("auth-dialog").close();
           loginId = "";
-        } else $("auth-error").textContent = String(value.error || "Login cancelado");
+        } else $("auth-error").textContent = String(value.error || "Sign-in cancelled");
       }
       void refresh().catch((error) => notice(String(error)));
     } else if (
@@ -485,6 +560,17 @@ async function refresh() {
   renderState();
   renderLogs();
   if (!$<HTMLSelectElement>("tool-select").options.length) renderTools();
+  const resource = $<HTMLSelectElement>("mine-resource");
+  if (!resource.options.length) {
+    resource.replaceChildren(
+      ...ui.mining.resources.map((name) => new Option(itemName(name), name)),
+    );
+    const count = state.tools.find((t) => t.name === "gather")!.inputSchema.properties.count!;
+    const input = $<HTMLInputElement>("mine-count");
+    input.min = String(count.minimum);
+    input.max = String(count.maximum);
+    input.value = String(ui.mining.defaultCount);
+  }
 }
 
 action("auth-button", async () => {
@@ -507,13 +593,57 @@ action("pause", async () => {
 action("new-chat", async () => {
   await api("agent/new", {});
   await refresh();
-  notice("Nueva conversación preparada. Pulsa Iniciar compañero cuando quieras continuar.");
+  notice("");
 });
 action("spawn", async () => {
-  const ids = array<{ id: number }>(state.game.snapshot?.companions).map((c) => c.id);
-  const id = Math.max(0, ...ids) + 1;
-  const result = await api("tools/call", { name: "companion_spawn", args: { companionId: id } });
-  if (!result.success) throw new Error(String(result.error));
+  const count = array(state.game.snapshot?.companions).length;
+  const input = $<HTMLInputElement>("companion-name");
+  input.value = count ? `${ui.defaultCompanionName} ${count + 1}` : ui.defaultCompanionName;
+  input.maxLength = Number(
+    state.tools.find((t) => t.name === "companion_spawn")!.inputSchema.properties.name!.maxLength,
+  );
+  $("spawn-error").textContent = "";
+  $<HTMLDialogElement>("spawn-dialog").showModal();
+  input.focus();
+  input.select();
+});
+function form(id: string, errorId: string, submit: () => Promise<void>) {
+  $(id).addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = $(id).querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    button.disabled = true;
+    $(errorId).textContent = "";
+    try {
+      await submit();
+    } catch (error) {
+      $(errorId).textContent = String(error).replace(/^Error: /, "");
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+form("spawn-form", "spawn-error", async () => {
+  const list = (await tool("companion_list", {})) as { companions?: Array<{ id: number }> };
+  const ids = new Set(array<{ id: number }>(list.companions).map((c) => c.id));
+  let id = 1;
+  while (ids.has(id)) id++;
+  const name = $<HTMLInputElement>("companion-name").value.trim();
+  const result = (await tool("companion_spawn", { companionId: id, name })) as {
+    spawned?: boolean;
+  };
+  if (!result.spawned) throw new Error("Companion already exists. Try again.");
+  pendingSelection = id;
+  $<HTMLDialogElement>("spawn-dialog").close();
+  await refresh();
+});
+form("mine-form", "mine-error", async () => {
+  await tool("gather", {
+    companionId: miningCompanion,
+    resource: $<HTMLSelectElement>("mine-resource").value,
+    count: Number($<HTMLInputElement>("mine-count").value),
+  });
+  $<HTMLDialogElement>("mine-dialog").close();
+  await refresh();
 });
 async function login(type: string) {
   $("auth-error").textContent = "";
@@ -528,8 +658,8 @@ async function login(type: string) {
     $("auth-progress").hidden = false;
     $("device-code").textContent = result.userCode || "";
     $("auth-instruction").textContent = result.userCode
-      ? "Abre la página e introduce este código:"
-      : "Completa el acceso en el navegador de este ordenador:";
+      ? "Enter this code on the sign-in page:"
+      : "Sign in using this computer’s browser:";
     const url = new URL(result.verificationUrl || result.authUrl || "");
     if (url.protocol !== "https:") throw new Error("Invalid login URL");
     $<HTMLAnchorElement>("auth-link").href = url.href;
@@ -570,16 +700,23 @@ $("unlock-form").addEventListener("submit", async (event) => {
 $("chat-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = $<HTMLTextAreaElement>("message");
+  const button = $<HTMLButtonElement>("send-message");
+  if (button.disabled || !input.value.trim()) return;
+  button.disabled = true;
   try {
     await api("chat", {
       message: input.value,
       companionId: Number($<HTMLSelectElement>("target").value),
     });
     input.value = "";
+    if (!state.agent.enabled && state.agent.account) await api("agent/resume", {});
+    else if (!state.agent.account) $<HTMLDialogElement>("auth-dialog").showModal();
     await refresh();
     $("messages").scrollTop = $("messages").scrollHeight;
   } catch (error) {
     notice(String(error));
+  } finally {
+    button.disabled = false;
   }
 });
 $("message").addEventListener("keydown", (event) => {
@@ -611,6 +748,7 @@ for (const id of ["model", "focus"])
       focus: Number($<HTMLSelectElement>("focus").value),
     }).catch((error) => notice(String(error)));
   });
+$("target").addEventListener("change", renderCompanions);
 $("tool-select").addEventListener("change", renderTools);
 $("tool-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -628,7 +766,7 @@ $("tool-form").addEventListener("submit", async (event) => {
               ? JSON.parse(input.value)
               : input.value;
     }
-    $("tool-result").textContent = "Ejecutando…";
+    $("tool-result").textContent = "Running…";
     $("tool-result").textContent = pretty(await api("tools/call", { name, args }));
   } catch (error) {
     $("tool-result").textContent = String(error);

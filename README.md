@@ -13,7 +13,7 @@ bun run mod:install
 bun run start
 ```
 
-Open **http://127.0.0.1:3210**. Select **Conectar Codex**, finish the login, then **Iniciar Codex**. Send instructions in the browser or with `/fac consigue hierro` and `/fac 1 construye un horno` in Factorio. **Parar todo** interrupts Codex and cancels native companion work. Messages received while paused remain queued; a restart starts paused and does not replay interrupted actions.
+Open **http://127.0.0.1:3210**. Open **Settings** to sign in with ChatGPT. **Add companion** creates a character; **Mine**, **Follow me** and **Stop** run directly without model calls. Send a task with **Send & start**, or use `/fac gather iron` and `/fac 1 build a furnace` in Factorio. **Stop all** interrupts Codex and cancels native companion work. Messages received while paused remain queued; a restart starts paused and does not replay interrupted actions.
 
 Close Factorio completely before editing its configuration: a running game can overwrite external changes when saving its settings. Enable RCON in `config.ini`, under `[other]`:
 
@@ -70,10 +70,14 @@ Set that environment variable to the service token before starting Codex. Codex 
 | `config/gameplay.json` | Queue kinds, observation/retention limits and gameplay tuning |
 | `config/mod.json` + `package.json` | Generated mod metadata and the single release version |
 | `config/harnesses.json` | Modern MCP client switches for the Claude launcher and Codex integration check |
+| `config/dashboard.json` | Companion defaults, mining choices and job labels; form bounds come from the tool contract |
+| `config/agent.json` | Terrain grouping for compact automatic model observations |
 
 Run `bun run generate` after changing configuration. Generated Lua and metadata are checked in so the mod can be packaged independently. Do not edit generated files. Lua handlers own game behavior; the dashboard, Codex host and MCP transport all share one serialized `GameBridge`.
 
 World observations are bounded samples of charted and nearby visible terrain, with machine inventories, research, companion tasks and errors. They are structured telemetry, not a screenshot or a complete simulation of every map chunk. The most recent completed job remains inspectable until replaced/cancelled. Game chat retains a bounded mailbox; the server persists ingested messages and its cursor.
+
+Automatic model context groups ore and trees and counts water tiles. Machines, enemies, inventories and job results retain their detail; `world_observe` provides individual terrain positions on demand. Dashboard map data stays complete within the configured observation bounds.
 
 ## Development and checks
 

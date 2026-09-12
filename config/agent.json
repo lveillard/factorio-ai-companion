@@ -1,0 +1,6 @@
+{
+  "observation": {
+    "groupEntityTypes": ["resource", "tree"],
+    "positionsPerGroup": 3
+  }
+}

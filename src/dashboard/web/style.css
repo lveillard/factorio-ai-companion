@@ -53,7 +53,7 @@ button:hover {
 }
 button:disabled {
   opacity: 0.5;
-  cursor: wait;
+  cursor: default;
 }
 .primary {
   background: var(--accent);
@@ -142,8 +142,9 @@ main {
 }
 .status-strip {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr minmax(220px, 0.9fr);
-  padding: 4px 0 26px;
+  grid-template-columns: 1fr 1fr auto;
+  align-items: center;
+  padding: 0 0 20px;
   gap: 24px;
 }
 .status-strip > div:not(:last-child) {
@@ -239,7 +240,7 @@ p {
   margin-left: 4px;
 }
 .tab-content {
-  min-height: 570px;
+  min-height: 420px;
 }
 .tab-content[hidden] {
   display: none;
@@ -250,9 +251,8 @@ p {
 #tab-chat {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 290px);
-  min-height: 570px;
-  max-height: 920px;
+  height: 480px;
+  min-height: 420px;
 }
 #messages {
   flex: 1;
@@ -262,7 +262,7 @@ p {
 }
 .empty-state {
   max-width: 410px;
-  margin: 70px auto 50px;
+  margin: 60px auto 40px;
   text-align: center;
 }
 .empty-symbol {
@@ -462,15 +462,28 @@ canvas {
   padding: 0 20px;
   margin: 9px 0 15px;
 }
+.roster-panel {
+  margin-bottom: 20px;
+}
 .roster-panel .panel-heading {
   padding: 14px 20px;
 }
 #companions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
   padding: 0 20px 16px;
 }
 .companion-card {
-  padding: 13px 0;
-  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #151b1c;
+}
+.companion-card.selected {
+  border-color: var(--accent);
 }
 .companion-title {
   display: flex;
@@ -478,11 +491,27 @@ canvas {
   align-items: center;
   gap: 10px;
 }
-.companion-title button {
+.companion-select {
   min-height: 28px;
-  padding: 4px 8px;
-  font-size: 0.75rem;
-  color: var(--muted);
+  padding: 2px 0;
+  border-color: transparent;
+  background: transparent;
+  font-size: 1rem;
+  color: var(--text);
+}
+.companion-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 14px;
+}
+.companion-actions button {
+  min-height: 36px;
+  flex: 1 1 0;
+  padding: 8px 6px;
+  white-space: nowrap;
+  font-size: 0.8rem;
 }
 .companion-card p {
   font-size: 0.875rem;
@@ -545,14 +574,8 @@ dd {
   color: var(--muted);
   font-size: 0.875rem;
 }
-.tools-intro {
-  padding: 24px 22px 0;
-}
-.tools-intro p {
-  font-size: 0.875rem;
-}
 #tool-form {
-  padding: 0 22px;
+  padding-top: 16px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -603,7 +626,10 @@ pre {
   background: #111718;
 }
 #tool-result {
-  margin: 22px;
+  margin: 16px 0 0;
+}
+#tool-result:empty {
+  display: none;
 }
 .log-toolbar {
   display: flex;
@@ -672,6 +698,19 @@ dialog h2 {
 }
 dialog p {
   font-size: 1rem;
+}
+dialog label {
+  display: block;
+  margin: 16px 0 8px;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+dialog input,
+dialog select {
+  width: 100%;
+}
+dialog [role="alert"] {
+  color: var(--red);
 }
 .auth-actions,
 .auth-footer {
@@ -760,7 +799,7 @@ dialog p {
     grid-template-columns: 1fr;
   }
   #tab-chat {
-    height: 650px;
+    height: 460px;
   }
   .world-column {
     display: grid;
@@ -791,7 +830,11 @@ dialog p {
     padding: 16px;
   }
   .status-strip {
+    grid-template-columns: 1fr 1fr;
     gap: 18px 10px;
+  }
+  .session-actions {
+    grid-column: 1/-1;
   }
   .status-strip strong {
     font-size: 1rem;

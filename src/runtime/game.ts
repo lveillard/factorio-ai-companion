@@ -24,6 +24,7 @@ export interface WorldSnapshot {
     position?: { x: number; y: number };
     inventory?: unknown;
     queues?: unknown;
+    last_jobs?: unknown;
   }>;
   players: unknown[];
   entities: unknown[];

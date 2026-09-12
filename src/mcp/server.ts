@@ -5,12 +5,14 @@ import pkg from "../../package.json";
 
 export function createMCPServer(game: GameBridge): McpServer {
   const server = new McpServer({ name: pkg.name, version: pkg.version });
-  for (const [name, definition] of Object.entries(COMMANDS)) {
+  for (const tool of game.schemas) {
+    const { name } = tool;
+    const definition = COMMANDS[name]!;
     server.registerTool(
       name,
       {
-        description: definition.description,
-        inputSchema: fromJsonSchema(definition.inputSchema),
+        description: tool.description,
+        inputSchema: fromJsonSchema(tool.inputSchema),
         annotations: {
           readOnlyHint: definition.effect === "read",
           destructiveHint: definition.effect === "act",

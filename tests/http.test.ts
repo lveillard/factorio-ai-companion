@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createApplication } from "../src/dashboard/server";
 import { readSettings } from "../config/settings";
-import { COMMANDS } from "../src/mcp/schema";
+import { COMMANDS, generateToolSchemas } from "../src/mcp/schema";
 
 test("modern MCP HTTP exposes the canonical tools and rejects unauthenticated/legacy requests", async () => {
   const directory = mkdtempSync(join(tmpdir(), "factorio-http-"));
@@ -51,6 +51,9 @@ test("modern MCP HTTP exposes the canonical tools and rejects unauthenticated/le
     await client.connect(transport);
     const list = await client.listTools();
     expect(list.tools.map((tool) => tool.name).sort()).toEqual(Object.keys(COMMANDS).sort());
+    expect(list.tools.map((tool) => ({ name: tool.name, description: tool.description }))).toEqual(
+      generateToolSchemas().map((tool) => ({ name: tool.name, description: tool.description })),
+    );
     const status = await client.callTool({ name: "session_status", arguments: {} });
     expect(status.isError).toBe(false);
     const failed = await client.callTool({

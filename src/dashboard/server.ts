@@ -240,7 +240,7 @@ export function createApplication(
           return json({ ok: true });
         }
         case "/api/tools/call":
-          return json(await game.execute(String(data.name), data.args));
+          return json(await session.manualTool(String(data.name), data.args));
         default:
           return json({ error: "Not found" }, 404);
       }
