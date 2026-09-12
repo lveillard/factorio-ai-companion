@@ -84,6 +84,20 @@ export const SETTINGS = {
     max: 256,
     description: "Maximum game tools per Codex turn",
   },
+  MAX_JOB_CONTINUATIONS: {
+    type: "integer",
+    default: 12,
+    min: 0,
+    max: 100,
+    description: "Maximum automatic follow-up turns per request after native game jobs finish",
+  },
+  JOB_REVIEW_TIMEOUT_MS: {
+    type: "integer",
+    default: 300000,
+    min: 10000,
+    max: 3600000,
+    description: "Recheck a native job after this delay even if it still reports active",
+  },
   MAX_QUEUED_MESSAGES: {
     type: "integer",
     default: 50,

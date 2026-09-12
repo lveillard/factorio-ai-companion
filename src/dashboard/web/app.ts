@@ -99,6 +99,7 @@ function renderMessages() {
       const labels = {
         queued: "En cola",
         running: "En curso",
+        waiting: "Trabajando en el juego · continuará al terminar",
         failed: "No completado",
         cancelled: "Cancelado",
       };
@@ -141,20 +142,24 @@ function renderState() {
   $("agent-state").textContent = state.agent.busy
     ? "Trabajando"
     : state.agent.enabled
-      ? "Escuchando"
+      ? state.agent.waiting
+        ? "Tarea en el juego"
+        : "Escuchando"
       : "En pausa";
   $("agent-detail").textContent =
     state.agent.error ||
     (state.agent.queued
       ? `${state.agent.queued} mensaje(s) en cola`
-      : state.agent.enabled
-        ? "Listo para tus indicaciones"
-        : "Tú marcas el siguiente paso");
-  $("resume").textContent = state.agent.enabled ? "Compañero activo ✓" : "Iniciar compañero ↗";
+      : state.agent.waiting
+        ? "Codex revisará el resultado cuando acabe"
+        : state.agent.enabled
+          ? "Listo para tus indicaciones"
+          : "Inicia Codex para procesar los mensajes");
+  $("resume").textContent = state.agent.enabled ? "Codex activo ✓" : "Iniciar Codex ↗";
   $<HTMLButtonElement>("resume").disabled = state.agent.enabled;
   $("queue-hint").textContent = state.agent.enabled
     ? "Enter para enviar"
-    : "En pausa · se guardará en cola";
+    : "Codex en pausa · pulsa Iniciar Codex para procesar la cola";
   $("rcon-address").textContent = `${state.rcon.host}:${state.rcon.port}`;
   $("mcp-address").textContent = state.mcp.url;
   $("observed-at").textContent = state.game.observedAt

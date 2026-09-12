@@ -1,31 +1,6 @@
 local u = require("commands.init")
 local queues = require("commands.queues")
 
-u.register("item_craft", function(args)
-  u.safe_command(function()
-    local id, c = u.find_companion(args.companionId)
-    if not id then u.not_found(); return end
-    local item, count = args.recipe, tonumber(args.count) or 1
-    local recipe = c.entity.force.recipes[item]
-    if not recipe then u.json_response({id = id, error = "Recipe not found"}); return end
-    if not recipe.enabled then u.json_response({id = id, error = "Not unlocked"}); return end
-    if c.entity.get_craftable_count(recipe) < count then
-      local missing = {}
-      local inv = c.entity.get_inventory(defines.inventory.character_main)
-      for _, ing in ipairs(recipe.ingredients) do
-        local have, need = inv.get_item_count(ing.name), ing.amount * count
-        if have < need then missing[#missing + 1] = {name = ing.name, have = have, need = need} end
-      end
-      u.json_response({id = id, error = "Missing", missing = missing}); return
-    end
-    local crafted = c.entity.begin_crafting{recipe = item, count = count}
-    -- headless: the companion's craft does not fire craft-item research triggers ->
-    -- compensate (e.g. crafting a lab unlocks the automation-science-pack recipe).
-    u.fire_craft_triggers(c.entity.force, item, crafted)
-    u.json_response({id = id, crafted = crafted, item = item})
-  end)
-end)
-
 u.register("item_pick", function(args)
   u.safe_command(function()
     local id, c = u.find_companion(args.companionId)

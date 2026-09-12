@@ -3,12 +3,7 @@ local M = {}
 local limits = u.settings.observation
 
 local function position(p) return {x = p.x, y = p.y} end
-local function contents(inv)
-  if not inv or not inv.valid then return {} end
-  local result = inv.get_contents()
-  table.sort(result, function(a, b) return a.name < b.name end)
-  return result
-end
+local contents = u.inventory_contents
 
 function M.session_id()
   if not storage.bridge_session_id then
@@ -53,6 +48,16 @@ local function queues(cid)
   return result
 end
 
+local function last_jobs(cid)
+  local result = {}
+  for _, name in ipairs(u.settings.queues) do
+    local q = storage.queue_results and storage.queue_results[name .. "_queues"] and storage.queue_results[name .. "_queues"][cid]
+    if q then result[name] = {state=q.state, error=q.error, finished_tick=q.finished_tick,
+      gathered=q.gathered, crafted=q.crafted, harvested=q.harvested, resource=q.resource, recipe=q.recipe} end
+  end
+  return result
+end
+
 u.register("world_observe", function(args)
   u.safe_command(function()
     local cid, radius = tonumber(args.companionId) or 0, tonumber(args.radius) or 48
@@ -77,7 +82,7 @@ u.register("world_observe", function(args)
       if c.entity and c.entity.valid then
         result.companions[#result.companions + 1] = {id = id, name = c.name, surface = c.entity.surface.name,
           position = position(c.entity.position), health = c.entity.health, max_health = c.entity.max_health,
-          inventory = contents(c.entity.get_main_inventory()), queues = queues(id)}
+          inventory = contents(c.entity.get_main_inventory()), queues = queues(id), last_jobs = last_jobs(id)}
       else result.companions[#result.companions + 1] = {id = id, name = c.name, dead = true} end
     end
     table.sort(result.companions, function(a, b) return a.id < b.id end)

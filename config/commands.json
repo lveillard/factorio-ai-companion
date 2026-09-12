@@ -148,7 +148,8 @@
     },
     "before": [
       "companion_stop"
-    ]
+    ],
+    "continuation": "none"
   },
   "companion_stop": {
     "description": "Stop all queues for a companion (harvest, craft, build, combat, walk)",
@@ -167,7 +168,8 @@
         "companionId"
       ],
       "additionalProperties": false
-    }
+    },
+    "continuation": "none"
   },
   "move_to": {
     "description": "Move companion to specific coordinates",
@@ -262,7 +264,8 @@
     },
     "before": [
       "companion_stop"
-    ]
+    ],
+    "continuation": "none"
   },
   "resource_nearest": {
     "description": "Find nearest resource of a type",
@@ -439,7 +442,8 @@
         "companionId"
       ],
       "additionalProperties": false
-    }
+    },
+    "continuation": "none"
   },
   "item_pick": {
     "description": "Pick up items from ground near companion",
@@ -479,48 +483,6 @@
         "companionId",
         "itemName",
         "radius"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "item_craft": {
-    "description": "Craft an item (instant)",
-    "execution": "game",
-    "effect": "act",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "companionId": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 1000
-        },
-        "recipe": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 4000,
-          "allOf": [
-            {
-              "type": "string",
-              "pattern": "^[^\\r\\n\\0]*$"
-            },
-            {
-              "type": "string",
-              "pattern": "^\\S*$"
-            }
-          ]
-        },
-        "count": {
-          "default": 1,
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 10000
-        }
-      },
-      "required": [
-        "companionId",
-        "recipe",
-        "count"
       ],
       "additionalProperties": false
     }
@@ -603,7 +565,8 @@
         "companionId"
       ],
       "additionalProperties": false
-    }
+    },
+    "continuation": "none"
   },
   "item_recipes": {
     "description": "List available recipes for companion",
@@ -1340,7 +1303,8 @@
         "companionId"
       ],
       "additionalProperties": false
-    }
+    },
+    "continuation": "none"
   },
   "action_defend": {
     "description": "Defend current position (attack nearby enemies)",

@@ -168,8 +168,10 @@ u.register("companion_inventory", function(args)
       -- inventory unification (nil here; get_inventory(nil) throws) -- crafter_input/
       -- crafter_output are the correct 2.0+ names for both furnaces and assemblers.
       for _, it in ipairs({{defines.inventory.chest, "chest"}, {defines.inventory.crafter_input, "in"}, {defines.inventory.crafter_output, "out"}, {defines.inventory.fuel, "fuel"}}) do
-        local inv = t.get_inventory(it[1])
-        if inv then for name, count in pairs(inv.get_contents()) do items[#items + 1] = {name = name, count = count, slot = it[2]} end end
+        local inv = (it[2] ~= "chest" or t.type == "container" or t.type == "logistic-container") and t.get_inventory(it[1]) or nil
+        for _, item in ipairs(u.inventory_contents(inv)) do
+          items[#items + 1] = {name = item.name, count = item.count, quality = item.quality, slot = it[2]}
+        end
       end
       u.json_response({id = id, entity = t.name, items = items})
     else

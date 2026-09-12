@@ -1,4 +1,19 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.18.1
+Date: 2026-09-13
+  Bugfixes:
+    - Cancel native crafting and refund pending ingredients when stopping a companion.
+    - Preserve partial job results and cancellation/failure reasons for later inspection.
+    - Keep pending objectives when the player asks questions; replace them on new actions.
+    - Bound automatic job reviews, preserve pending history and recover after connection loss.
+    - Wait for native crafting to finish before reporting crafted items.
+    - Correct machine inventory names, quantities and quality; avoid duplicate fuel entries.
+    - Resume agent requests after native jobs, including jobs that stop before the agent replies.
+    - Attribute game replies to the addressed companion.
+  Changes:
+    - Use item_craft_start/status/stop as the single tracked crafting API.
+    - Add Lua regression tests that run without Factorio.
+---------------------------------------------------------------------------------------------------
 Version: 0.18.0
 Date: 2026-09-12
   Features:

@@ -25,6 +25,21 @@ M.dir_map = {
 
 function M.print_color(c) return {color = c} end
 
+function M.inventory_contents(inv)
+  if not inv or not inv.valid then return {} end
+  local result = inv.get_contents()
+  table.sort(result, function(a, b) return a.name < b.name end)
+  return result
+end
+
+function M.cancel_native_crafting(entity)
+  -- Cancelling an earlier craft can remove later dependent crafts too.
+  local crafts = entity.crafting_queue or {}
+  for index = #crafts, 1, -1 do
+    entity.cancel_crafting{index=index, count=crafts[index].count}
+  end
+end
+
 function M.get_companion_color(id)
   return M.COMPANION_COLORS[((id - 1) % #M.COMPANION_COLORS) + 1]
 end

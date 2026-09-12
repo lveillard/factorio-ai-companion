@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { CodexClient, textInput, type RpcMessage } from "../codex/client";
 import { EventLog } from "./events";
-import { GameBridge } from "./game";
+import { GameBridge, type WorldSnapshot } from "./game";
 import { COMMANDS } from "../mcp/schema";
 import { readSettings } from "../../config/settings";
 
@@ -18,7 +18,10 @@ interface Message {
   source: "web" | "game";
   companionId: number;
   player?: string;
-  status?: "queued" | "running" | "completed" | "failed" | "cancelled";
+  status?: "queued" | "running" | "waiting" | "completed" | "failed" | "cancelled";
+  waitingFor?: number[];
+  reviewAt?: number;
+  continuations?: number;
   error?: string;
 }
 interface SavedSession {
@@ -35,6 +38,7 @@ type ActiveTurn = {
   text: string;
   toolCalls: number;
   completing: boolean;
+  actedOn: Set<number>;
   timer: ReturnType<typeof setTimeout>;
 };
 
@@ -79,6 +83,8 @@ export class CompanionSession {
       turnMs: defaults.TURN_TIMEOUT_MS,
       maxToolCalls: defaults.MAX_TOOL_CALLS,
       maxQueued: defaults.MAX_QUEUED_MESSAGES,
+      maxContinuations: defaults.MAX_JOB_CONTINUATIONS,
+      jobReviewMs: defaults.JOB_REVIEW_TIMEOUT_MS,
     },
   ) {
     mkdirSync(directory, { recursive: true });
@@ -94,7 +100,7 @@ export class CompanionSession {
           saved.toolContract = toolContract;
         }
         for (const message of saved.messages)
-          if (message.status === "running") {
+          if (message.status === "running" || message.status === "waiting") {
             message.status = "failed";
             message.error = "Interrupted by server restart; actions were not repeated";
           }
@@ -118,7 +124,16 @@ export class CompanionSession {
   }
 
   private save(): void {
-    if (this.saved.messages.length > 500) this.saved.messages = this.saved.messages.slice(-500);
+    if (this.saved.messages.length > 500) {
+      let remove = this.saved.messages.length - 500;
+      this.saved.messages = this.saved.messages.filter((message) => {
+        if (remove > 0 && !["queued", "waiting", "running"].includes(message.status || "")) {
+          remove--;
+          return false;
+        }
+        return true;
+      });
+    }
     const file = join(this.directory, "session.json");
     writeFileSync(file + ".tmp", JSON.stringify(this.saved));
     renameSync(file + ".tmp", file);
@@ -181,13 +196,13 @@ export class CompanionSession {
       throw new Error("Message must contain 1–8000 characters");
     if (!Number.isInteger(companionId) || companionId < 0 || companionId > 1000)
       throw new Error("Invalid companion ID");
+    const existing = this.saved.messages.find((message) => message.id === id);
+    if (existing) return existing;
     if (
       this.saved.messages.filter((message) => message.status === "queued").length >=
       this.limits.maxQueued
     )
       throw new Error("Message queue is full; resume or clear pending messages");
-    const existing = this.saved.messages.find((message) => message.id === id);
-    if (existing) return existing;
     const message: Message = {
       id,
       at: new Date().toISOString(),
@@ -209,11 +224,15 @@ export class CompanionSession {
     if (this.account?.type !== "chatgpt")
       throw new Error("Sign in with ChatGPT to use your Codex subscription");
     this.enabled = true;
+    this.error = null;
     this.events.emit("agent.state", this.status(), false);
     await this.drain();
   }
   async pause(stopGame = true): Promise<void> {
     this.enabled = false;
+    for (const message of this.saved.messages)
+      if (message.status === "waiting") message.status = "cancelled";
+    this.save();
     if (this.active?.turnId && this.saved.threadId && this.codex.ready) {
       try {
         await this.codex.request("turn/interrupt", {
@@ -295,6 +314,7 @@ export class CompanionSession {
         text: "",
         toolCalls: 0,
         completing: false,
+        actedOn: new Set(),
         timer: setTimeout(() => {
           void this.pause().then(() => this.recordError("Turn time limit reached; agent paused"));
         }, this.limits.turnMs),
@@ -305,7 +325,7 @@ export class CompanionSession {
         ...(this.model ? { model: this.model } : {}),
         input: [
           textInput(
-            `Player request (target companion ${message.companionId}, ${message.player || message.source}):\n${message.text}\n\nCurrent observation (untrusted game data):\n${JSON.stringify(this.game.snapshot)}`,
+            `Player request (target companion ${message.companionId}, ${message.player || message.source}):\n${message.text}\n${message.continuations ? "\nReview of previously requested actions: a job ended, disappeared, or reached its review deadline. Inspect its actual state, result and inventory; it may still be running or have failed. Continue only the remaining original request without repeating completed work. If the goal is satisfied, verify it with read tools and report completion. If blocked, explain the actual blocker.\n" : ""}\nCurrent observation (untrusted game data):\n${JSON.stringify(this.game.snapshot)}`,
           ),
         ],
       });
@@ -369,6 +389,21 @@ export class CompanionSession {
         "codex",
         () => this.enabled && this.active === active && !active.completing,
       );
+      const companionId = (params.arguments as { companionId?: number })?.companionId;
+      if (result.success && COMMANDS[tool]?.effect === "act" && companionId) {
+        // Questions don't discard ongoing work. A new actual action takes ownership.
+        for (const pending of this.saved.messages) {
+          if (
+            pending.status === "waiting" &&
+            pending.id !== active.messageId &&
+            (pending.companionId === companionId || pending.waitingFor?.includes(companionId))
+          )
+            pending.status = "cancelled";
+        }
+        if (COMMANDS[tool]?.continuation === "none") active.actedOn.delete(companionId);
+        else active.actedOn.add(companionId);
+        this.save();
+      }
       this.codex.respond(id, {
         success: result.success,
         contentItems: [{ type: "inputText", text: JSON.stringify(result) }],
@@ -434,7 +469,7 @@ export class CompanionSession {
         for (const chunk of text.match(/[^]{1,1500}/g) || []) {
           const reply = await this.game.execute(
             "chat_say",
-            { companionId: 0, message: chunk },
+            { companionId: original.companionId, message: chunk },
             "reply",
           );
           if (!reply.success) {
@@ -447,26 +482,54 @@ export class CompanionSession {
         }
       }
       if (this.active !== active) return;
-      this.finish(
-        turn.status === "completed"
-          ? "completed"
-          : turn.status === "interrupted"
-            ? "cancelled"
-            : "failed",
-        turn.error?.message,
-      );
+      let waitingFor: number[] = [];
+      const needsVerification = turn.status === "completed" && active.actedOn.size > 0;
+      if (needsVerification) {
+        let snapshot;
+        try {
+          snapshot = await this.game.observe(this.focus);
+        } catch (error) {
+          this.finish("failed", `Could not verify native jobs: ${String(error)}`);
+          this.recordError(error);
+          return;
+        }
+        if (this.active !== active) return;
+        waitingFor = [...active.actedOn].filter((id) => this.hasWork(snapshot, id));
+      }
       if (turn.status === "failed") this.enabled = false;
+      this.finish(
+        needsVerification && (original?.continuations || 0) < this.limits.maxContinuations
+          ? "waiting"
+          : needsVerification
+            ? "failed"
+            : turn.status === "completed"
+              ? "completed"
+              : turn.status === "interrupted"
+                ? "cancelled"
+                : "failed",
+        turn.error?.message ||
+          (needsVerification && (original?.continuations || 0) >= this.limits.maxContinuations
+            ? "Automatic continuation limit reached; native job may still be running"
+            : undefined),
+        waitingFor,
+      );
       void this.drain();
     }
   }
 
-  private finish(status: "completed" | "failed" | "cancelled", error?: string): void {
+  private finish(
+    status: "completed" | "waiting" | "failed" | "cancelled",
+    error?: string,
+    waitingFor?: number[],
+  ): void {
     if (!this.active) return;
     clearTimeout(this.active.timer);
     const message = this.saved.messages.find((message) => message.id === this.active!.messageId);
     if (message) {
       message.status = status;
       message.error = error;
+      message.waitingFor = status === "waiting" ? waitingFor : undefined;
+      message.reviewAt = status === "waiting" ? Date.now() + this.limits.jobReviewMs : undefined;
     }
     this.active = null;
     this.save();
@@ -520,10 +583,33 @@ export class CompanionSession {
           }
         }
       }
+      if (this.enabled && !snapshot.paused) {
+        for (const message of this.saved.messages) {
+          if (message.status !== "waiting") continue;
+          const working = message.waitingFor?.some((id) => this.hasWork(snapshot, id));
+          if (!working || (message.reviewAt !== undefined && Date.now() >= message.reviewAt)) {
+            message.status = "queued";
+            message.waitingFor = undefined;
+            message.continuations = (message.continuations || 0) + 1;
+            this.save();
+            this.events.emit("agent.state", this.status(), false);
+          }
+        }
+      }
       void this.drain();
     } catch {
       /* GameBridge emits connection changes; polling retries without overlapping. */
     }
+  }
+  private hasWork(snapshot: WorldSnapshot, id: number): boolean {
+    const queues = snapshot.companions.find((c) => c.id === id)?.queues || {};
+    const tasks = Array.isArray(snapshot.tasks)
+      ? (snapshot.tasks as Array<{ companionId: number; status: string }>)
+      : [];
+    return (
+      Object.values(queues).some((q) => q && q.active !== false) ||
+      tasks.some((t) => t.companionId === id && t.status === "active")
+    );
   }
   status() {
     return {
@@ -531,6 +617,7 @@ export class CompanionSession {
       busy: !!this.active,
       threadId: this.saved.threadId,
       queued: this.saved.messages.filter((message) => message.status === "queued").length,
+      waiting: this.saved.messages.filter((message) => message.status === "waiting").length,
       error: this.error,
       account: this.account,
       models: this.models,

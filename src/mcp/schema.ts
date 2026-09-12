@@ -12,6 +12,7 @@ export interface CommandDefinition {
   effect: "read" | "chat" | "act";
   inputSchema: InputSchema;
   before?: string[];
+  continuation?: "none";
 }
 export const COMMANDS = definitions as Record<string, CommandDefinition>;
 const validators = new Map(
@@ -34,7 +35,11 @@ export function buildRCONCommand(name: string, raw: unknown): string {
 export function generateToolSchemas() {
   return Object.entries(COMMANDS).map(([name, definition]) => ({
     name,
-    description: definition.description,
+    description:
+      definition.description +
+      (definition.before?.includes("companion_stop")
+        ? " This command cancels all current work for this companion, including mining, crafting and tasks."
+        : ""),
     inputSchema: definition.inputSchema,
   }));
 }

@@ -9,13 +9,30 @@ end
 
 local function finish_queue(queue_name, cid, q)
   q._finished = true
+  q.finished_tick = game.tick
+  q.error = q.error or q.failed
   if q.product and q.start_count then
     local c = u.get_companion(cid)
     q.gathered = c and c.entity.get_main_inventory().get_item_count(q.product) - q.start_count or 0
   end
+  if q.state ~= "cancelled" and q.state ~= "failed" then
+    local produced = q.gathered or q.harvested or q.crafted
+    if q.failed or (type(q.target) == "number" and produced and produced < q.target) then
+      q.state = "failed"
+      q.error = q.error or "Job ended before the requested amount was produced"
+    else q.state = "done" end
+  end
   storage.queue_results[queue_name] = storage.queue_results[queue_name] or {}
   storage.queue_results[queue_name][cid] = q
   storage[queue_name][cid] = nil
+end
+
+function M.cancel_queue(queue_name, cid)
+  local q = storage[queue_name] and storage[queue_name][cid]
+  if not q then return false end
+  q.state, q.error = "cancelled", "Cancelled by a new command or stop request"
+  finish_queue(queue_name, cid, q)
+  return true
 end
 
 -- Constants
@@ -58,12 +75,14 @@ local function process_queue(queue_name, processor)
     if q.state == "done" or q.state == "failed" then
       to_remove[#to_remove + 1] = cid
     elseif not c then
+      q.state, q.error = "failed", "Companion is no longer available"
       to_remove[#to_remove + 1] = cid
     else
       local total = c.entity.get_inventory(defines.inventory.character_main).get_item_count()
       local pos = c.entity.position
       local moved = q._stale_pos and (u.distance(q._stale_pos, pos) > 5)
-      if queue_name == "build_queues" and q.state == "stepping_away" then
+      if (queue_name == "build_queues" and q.state == "stepping_away") or
+        (queue_name == "craft_queues" and q.inflight and c.entity.crafting_queue_size > 0) then
         q._stale_total, q._stale_pos, q._stale_ticks = total, {x = pos.x, y = pos.y}, 0
       elseif q._stale_total == total and q._stale_pos and not moved then
         q._stale_ticks = (q._stale_ticks or 0) + TICK_INTERVAL
@@ -140,11 +159,8 @@ local function process_queue(queue_name, processor)
         if not recovered_via_respawn then
           c.entity.mining_state = {mining = false}
           c.entity.walking_state = {walking = false}
-          if queue_name == "gather_queues" or queue_name == "fuel_queues" then
-            q.state = "done"
-          else
-            to_remove[#to_remove + 1] = cid
-          end
+          q.state, q.error = "failed", "No inventory or movement progress before timeout"
+          to_remove[#to_remove + 1] = cid
         end
       else
         local should_remove = processor(cid, q, c)
@@ -333,6 +349,7 @@ function M.get_harvest_status(cid)
   if not q then return {active = false} end
   return {
     active = not q._finished,
+    state = q.state, error = q.error,
     harvested = q.harvested,
     target = q.target,
     remaining = #q.entities,
@@ -348,7 +365,7 @@ function M.stop_harvest(cid)
   if c then c.entity.mining_state = {mining = false} end
 
   local harvested = q.harvested
-  storage.harvest_queues[cid] = nil
+  M.cancel_queue("harvest_queues", cid)
   return {stopped = true, harvested = harvested}
 end
 
@@ -491,7 +508,8 @@ function M.tick_gather_queues()
       if not e then
         q.find_retry_deadline = q.find_retry_deadline or (game.tick + 300)
         if game.tick < q.find_retry_deadline then return false end
-        q.state = "done"; return false   -- no reachable patch left after retrying -> done, return what we have
+        q.state, q.error = "failed", "No reachable resource remains before target was reached"
+        return false
       end
       local mp = e.prototype.mineable_properties
       if not (mp and mp.products and mp.products[1]) then
@@ -712,7 +730,7 @@ function M.get_gather_status(cid)
       selected = selected_name, mining_state_mining = mining}
   end
   return {active = not q._finished, resource = q.resource, target = q.target, gathered = have,
-    state = q.state, blacklist = bl, entity_pos = q.entity_pos,
+    state = q.state, error = q.error, blacklist = bl, entity_pos = q.entity_pos,
     selected = selected_name, mining_state_mining = mining}
 end
 
@@ -813,7 +831,7 @@ function M.get_fuel_status(cid)
   if q.state == "done" then
     return {active = false, fueled = q.fueled, machines = q.machines, blacklist = bl}
   end
-  return {active = not q._finished, state = q.state, fueled = q.fueled, machines = q.machines, blacklist = bl}
+  return {active = not q._finished, state = q.state, error = q.error, fueled = q.fueled, machines = q.machines, blacklist = bl}
 end
 
 -- ============ CRAFT ============
@@ -821,6 +839,9 @@ end
 function M.start_craft(cid, recipe, count)
   local c = valid_companion(cid)
   if not c then return {error = "Invalid companion"} end
+  if storage.craft_queues[cid] or c.entity.crafting_queue_size > 0 then
+    return {error = "Crafting is already active; wait for item_craft_status before starting another recipe"}
+  end
 
   local proto = prototypes.recipe[recipe]
   if not proto then return {error = "Unknown recipe: " .. recipe} end
@@ -844,17 +865,21 @@ end
 
 function M.tick_craft_queues()
   process_queue("craft_queues", function(cid, q, c)
+    if q.inflight then
+      if c.entity.crafting_queue_size > 0 then return false end
+      q.crafted = q.crafted + q.inflight
+      u.fire_craft_triggers(c.entity.force, q.recipe, q.inflight)
+      q.inflight = nil
+      if q.crafted >= q.target then return true end
+    end
     local elapsed = game.tick - q.tick_start
     if elapsed < q.ticks_per then return false end
 
     local crafted = c.entity.begin_crafting{recipe = q.recipe, count = 1}
     if crafted < 1 then return true end
-    -- headless: fire craft-item research triggers the scripted craft would otherwise miss
-    u.fire_craft_triggers(c.entity.force, q.recipe, crafted)
-
-    q.crafted = q.crafted + 1
+    q.inflight = crafted
     q.tick_start = game.tick
-    return q.crafted >= q.target
+    return false
   end)
 end
 
@@ -863,19 +888,21 @@ function M.get_craft_status(cid)
   if not q then return {active = false} end
   return {
     active = not q._finished,
+    state = q.state, error = q.error,
     recipe = q.recipe,
     crafted = q.crafted,
     target = q.target,
-    progress = math.floor((game.tick - q.tick_start) / q.ticks_per * 100)
+    progress = q.state == "done" and 100 or math.min(99, math.floor((game.tick - q.tick_start) / q.ticks_per * 100))
   }
 end
 
 function M.stop_craft(cid)
   local q = storage.craft_queues[cid]
-  if not q then return {stopped = false} end
-  local crafted = q.crafted
-  storage.craft_queues[cid] = nil
-  return {stopped = true, crafted = crafted}
+  local c = valid_companion(cid)
+  local native = c and c.entity.crafting_queue_size > 0
+  if c then u.cancel_native_crafting(c.entity) end
+  M.cancel_queue("craft_queues", cid)
+  return {stopped = q ~= nil or native or false, crafted = q and q.crafted or 0}
 end
 
 -- ============ BUILD ============
@@ -1119,7 +1146,7 @@ function M.get_build_status(cid)
     return {active = false, placed = true, position = q.placed_position}
   end
   if q.state == "failed" then
-    return {active = false, placed = false, error = q.failed}
+    return {active = false, placed = false, error = q.error or q.failed}
   end
   local progress = 0
   if q.state == "approaching" then progress = 10
@@ -1133,6 +1160,7 @@ function M.get_build_status(cid)
     entity = q.entity,
     position = q.position,
     state = q.state,
+    error = q.error,
     progress = progress
   }
 end
@@ -1290,9 +1318,9 @@ function M.get_belt_connect_status(cid)
     return {active = false, connected = true, tiles = q.tiles_placed}
   end
   if q.state == "failed" then
-    return {active = false, connected = false, error = q.failed, tiles = q.tiles_placed}
+    return {active = false, connected = false, error = q.error or q.failed, tiles = q.tiles_placed}
   end
-  return {active = not q._finished, tiles_placed = q.tiles_placed, tiles_total = #q.path}
+  return {active = not q._finished, state = q.state, error = q.error, tiles_placed = q.tiles_placed, tiles_total = #q.path}
 end
 
 function M.stop_belt_connect(cid)
@@ -1382,6 +1410,7 @@ function M.get_combat_status(cid)
   return {
     active = not q._finished,
     targets_remaining = remaining,
+    state = q.state, error = q.error,
     current_target = q.current and q.current.valid and q.current.name or nil
   }
 end

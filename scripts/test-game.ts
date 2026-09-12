@@ -159,6 +159,27 @@ try {
   const completed2 = (await call("gather_status", { companionId: 1 })).status;
   assert.equal(completed1.gathered, completed2.gathered);
   assert.ok(completed1.gathered >= 3, JSON.stringify(completed1));
+  await call("gather", { companionId: 1, resource: "iron-ore", count: 20 });
+  await call("item_craft_start", { companionId: 1, recipe: "iron-gear-wheel", count: 2 });
+  await until(async () => !(await call("item_craft_status", { companionId: 1 })).status.active);
+  const craftedInventory = await call("companion_inventory", { companionId: 1 });
+  assert.ok(
+    craftedInventory.items.some((item: any) => item.name === "iron-gear-wheel" && item.count >= 4),
+    "Finished crafting must mean the items exist",
+  );
+  await until(async () => !(await call("gather_status", { companionId: 1 })).status.active, 60000);
+  const concurrentGather = (await call("gather_status", { companionId: 1 })).status;
+  assert.ok(
+    concurrentGather.gathered >= 20,
+    `Crafting must not lose a mining job: ${JSON.stringify(concurrentGather)}`,
+  );
+  await call("building_fill", { companionId: 1, itemName: "coal", count: 2, x: 0.5, y: 3.5 });
+  const chestInventory = await call("companion_inventory", { companionId: 1, x: 0.5, y: 3.5 });
+  assert.ok(
+    chestInventory.items.some(
+      (item: any) => item.name === "coal" && item.count === 2 && item.quality === "normal",
+    ),
+  );
   await call("gather", { companionId: 1, resource: "iron-ore", count: 100 });
   await call("companion_stop", { companionId: 1 });
   const stopped = await game.observe(1);

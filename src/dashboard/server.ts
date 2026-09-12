@@ -69,6 +69,8 @@ export function createApplication(
         turnMs: settings.TURN_TIMEOUT_MS,
         maxToolCalls: settings.MAX_TOOL_CALLS,
         maxQueued: settings.MAX_QUEUED_MESSAGES,
+        maxContinuations: settings.MAX_JOB_CONTINUATIONS,
+        jobReviewMs: settings.JOB_REVIEW_TIMEOUT_MS,
       },
     );
   const mcp = createMCPHttp(game);

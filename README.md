@@ -13,7 +13,7 @@ bun run mod:install
 bun run start
 ```
 
-Open **http://127.0.0.1:3210**. Select **Conectar Codex**, finish the login, then **Iniciar compañero**. Send instructions in the browser or with `/fac consigue hierro` and `/fac 1 construye un horno` in Factorio. **Parar todo** interrupts Codex and cancels native companion work. Messages received while paused remain queued; a restart starts paused and does not replay interrupted actions.
+Open **http://127.0.0.1:3210**. Select **Conectar Codex**, finish the login, then **Iniciar Codex**. Send instructions in the browser or with `/fac consigue hierro` and `/fac 1 construye un horno` in Factorio. **Parar todo** interrupts Codex and cancels native companion work. Messages received while paused remain queued; a restart starts paused and does not replay interrupted actions.
 
 Close Factorio completely before editing its configuration: a running game can overwrite external changes when saving its settings. Enable RCON in `config.ini`, under `[other]`:
 
@@ -87,6 +87,8 @@ bun run test:docker  # smoke the built image, including volume persistence
 ```
 
 For browser tests on Linux, install Chromium with `bunx playwright install --with-deps chromium`; `PLAYWRIGHT_CHANNEL` selects another installed browser. Real-game tests require a local Factorio executable (`FACTORIO_BINARY`), use separate config/mods/ports and never load your saves. They intentionally enable Lua fixture commands only inside their disposable world.
+
+`bun run check` also executes the production Lua modules in Fengari with deterministic engine doubles: crafting completion/cancellation, partial mining results, inventory formats, reservations and belt routes. It never launches Factorio. These regressions complement the real-engine suite; they do not emulate Factorio physics or other installed mods. Agent continuation limits and job review deadlines are defined in `config/settings.ts`.
 
 The revival incorporates the game engine from [PR #2 by Zdendys79](https://github.com/lveillard/factorio-ai-companion/pull/2), reviewed at `323ce441b078bc0d44d96af81c1b28bec70b2d61`. The old Claude daemons, subprocess skills, positional RCON endpoints, obsolete context commands and automatic publishing hooks have been removed. Historical plans remain available in Git.
 

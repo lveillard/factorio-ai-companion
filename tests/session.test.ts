@@ -8,6 +8,7 @@ import { EventLog } from "../src/runtime/events";
 import { GameBridge } from "../src/runtime/game";
 import type { CodexClient } from "../src/codex/client";
 import type { RCONClient } from "../src/rcon/client";
+import { readSettings } from "../config/settings";
 
 class FakeCodex extends EventEmitter {
   ready = true;
@@ -28,7 +29,9 @@ class FakeCodex extends EventEmitter {
   respond() {}
   reject() {}
 }
-function fixture() {
+function fixture(
+  overrides: Partial<NonNullable<ConstructorParameters<typeof CompanionSession>[4]>> = {},
+) {
   const directory = mkdtempSync(join(tmpdir(), "factorio-session-"));
   const events = new EventLog();
   const rcon = {
@@ -41,7 +44,16 @@ function fixture() {
   } as unknown as RCONClient;
   const game = new GameBridge(rcon, events),
     codex = new FakeCodex();
-  const session = new CompanionSession(game, codex as unknown as CodexClient, events, directory);
+  const defaults = readSettings({});
+  const session = new CompanionSession(game, codex as unknown as CodexClient, events, directory, {
+    pollMs: defaults.POLL_INTERVAL_MS,
+    turnMs: defaults.TURN_TIMEOUT_MS,
+    maxToolCalls: defaults.MAX_TOOL_CALLS,
+    maxQueued: defaults.MAX_QUEUED_MESSAGES,
+    maxContinuations: defaults.MAX_JOB_CONTINUATIONS,
+    jobReviewMs: defaults.JOB_REVIEW_TIMEOUT_MS,
+    ...overrides,
+  });
   return {
     directory,
     events,
@@ -114,6 +126,258 @@ test("queued game commands recheck cancellation at execution time", async () => 
     const pending = f.game.execute("companion_stop", { companionId: 1 }, "codex", () => allowed);
     allowed = false;
     expect(await pending).toEqual({ success: false, error: "Action cancelled before execution" });
+  } finally {
+    await f.close();
+  }
+});
+
+test("final game replies retain the addressed companion, including the coordinator", async () => {
+  for (const companionId of [0, 1, 2]) {
+    const f = fixture();
+    try {
+      f.session.enqueue("¿Qué estás haciendo?", companionId);
+      await f.session.resume();
+      f.codex.emit("notification", {
+        method: "item/completed",
+        params: {
+          threadId: "thread1",
+          turnId: "turn1",
+          item: { type: "agentMessage", text: "Estoy minando.", phase: "final_answer" },
+        },
+      });
+      f.codex.emit("notification", {
+        method: "turn/completed",
+        params: { threadId: "thread1", turn: { id: "turn1", status: "completed" } },
+      });
+      for (let attempt = 0; attempt < 100 && f.session.status().busy; attempt++) await Bun.sleep(1);
+      expect(f.session.status().busy).toBe(false);
+      const replies = f.events.recent.filter(
+        (event) =>
+          event.type === "tool.started" && (event.data as { name: string }).name === "chat_say",
+      );
+      expect(replies).toHaveLength(1);
+      expect((replies[0]!.data as { args: unknown }).args).toEqual({
+        companionId,
+        message: "Estoy minando.",
+      });
+    } finally {
+      await f.close();
+    }
+  }
+});
+
+for (const finishesBeforeReply of [false, true])
+  test(`native jobs wake the agent even when finished before reply: ${finishesBeforeReply}`, async () => {
+    const f = fixture();
+    try {
+      const snapshot = await f.game.observe(1);
+      snapshot.companions = [{ id: 1, queues: { gather: { active: true } } }];
+      f.game.observe = async () => snapshot;
+      f.session.enqueue("Mina hierro y prepara el horno", 1);
+      await f.session.resume();
+      f.codex.emit("request", {
+        id: "gather1",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread1",
+          turnId: "turn1",
+          namespace: "factorio",
+          tool: "gather",
+          arguments: { companionId: 1, resource: "iron-ore", count: 60 },
+        },
+      });
+      await Bun.sleep(10);
+      if (finishesBeforeReply) snapshot.companions[0]!.queues = {};
+      f.codex.emit("notification", {
+        method: "turn/completed",
+        params: { threadId: "thread1", turn: { id: "turn1", status: "completed" } },
+      });
+      await Bun.sleep(10);
+      expect(f.session.status().messages[0]!.status).toBe("waiting");
+      if (!finishesBeforeReply) {
+        await f.session["poll"]();
+        expect(f.codex.calls.filter((m) => m === "turn/start")).toHaveLength(1);
+      }
+      snapshot.companions[0]!.queues = {};
+      await f.session["poll"]();
+      await Bun.sleep(10);
+      expect(f.codex.calls.filter((m) => m === "turn/start")).toHaveLength(2);
+      expect(f.session.status().messages[0]!.continuations).toBe(1);
+      await f.session["poll"]();
+      expect(f.codex.calls.filter((m) => m === "turn/start")).toHaveLength(2);
+      snapshot.companions[0]!.queues = { gather: { active: true } };
+      f.codex.emit("request", {
+        id: "gather2",
+        method: "item/tool/call",
+        params: {
+          threadId: "thread1",
+          turnId: "turn1",
+          namespace: "factorio",
+          tool: "gather",
+          arguments: { companionId: 1, resource: "iron-ore", count: 27 },
+        },
+      });
+      await Bun.sleep(10);
+      f.codex.emit("notification", {
+        method: "turn/completed",
+        params: { threadId: "thread1", turn: { id: "turn1", status: "completed" } },
+      });
+      await Bun.sleep(10);
+      expect(f.session.status().messages[0]!.status).toBe("waiting");
+      await f.session.pause(false);
+      snapshot.companions[0]!.queues = {};
+      await f.session["poll"]();
+      await f.session.resume();
+      expect(f.session.status().messages[0]!.status).toBe("cancelled");
+      expect(f.codex.calls.filter((m) => m === "turn/start")).toHaveLength(2);
+    } finally {
+      await f.close();
+    }
+  });
+
+async function act(f: ReturnType<typeof fixture>, tool = "gather", companionId = 1) {
+  await f.session["request"]({
+    id: crypto.randomUUID(),
+    method: "item/tool/call",
+    params: {
+      threadId: "thread1",
+      turnId: "turn1",
+      namespace: "factorio",
+      tool,
+      arguments:
+        tool === "gather" ? { companionId, resource: "iron-ore", count: 60 } : { companionId },
+    },
+  });
+}
+async function complete(f: ReturnType<typeof fixture>, status = "completed") {
+  await f.session["notification"]({
+    method: "turn/completed",
+    params: { threadId: "thread1", turn: { id: "turn1", status } },
+  });
+}
+async function pendingJob(f: ReturnType<typeof fixture>) {
+  const snapshot = await f.game.observe(1);
+  snapshot.companions = [{ id: 1, queues: { gather: { active: true } } }];
+  f.game.observe = async () => snapshot;
+  f.session.enqueue("Mina hierro y monta la fábrica", 1);
+  await f.session.resume();
+  await act(f);
+  await complete(f);
+  expect(f.session.status().messages[0]!.status).toBe("waiting");
+  return snapshot;
+}
+test("questions preserve the pending objective; redirecting that companion replaces it", async () => {
+  const f = fixture();
+  try {
+    await pendingJob(f);
+    f.session.enqueue("¿Cómo vas?", 1);
+    await f.session.resume();
+    await complete(f);
+    expect(f.session.status().messages[0]!.status).toBe("waiting");
+    f.session.enqueue("Para", 1);
+    await f.session.resume();
+    await act(f, "companion_stop");
+    await complete(f);
+    expect(f.session.status().messages[0]!.status).toBe("cancelled");
+    expect(f.session.status().waiting).toBe(0);
+    expect(f.session.status().queued).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+test("acting on another companion does not discard the first companion's job", async () => {
+  const f = fixture();
+  try {
+    await pendingJob(f);
+    f.session.enqueue("Para", 2);
+    await f.session.resume();
+    await act(f, "companion_stop", 2);
+    await complete(f);
+    expect(f.session.status().messages[0]!.status).toBe("waiting");
+  } finally {
+    await f.close();
+  }
+});
+test("native job review has a bounded continuation budget", async () => {
+  const f = fixture({ maxContinuations: 0 });
+  try {
+    f.session.enqueue("Mina", 1);
+    await f.session.resume();
+    await act(f);
+    await complete(f);
+    expect(f.session.status().messages[0]!.status).toBe("failed");
+    expect(f.session.status().messages[0]!.error).toContain("limit reached");
+    await f.session["poll"]();
+    expect(f.codex.calls.filter((m) => m === "turn/start")).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+test("waiting survives temporary disconnect and reviews stuck jobs after its deadline", async () => {
+  const f = fixture();
+  try {
+    const snapshot = await pendingJob(f);
+    f.game.observe = async () => {
+      throw new Error("offline");
+    };
+    await f.session["poll"]();
+    expect(f.session.status().messages[0]!.status).toBe("waiting");
+    f.game.observe = async () => snapshot;
+    f.session.status().messages[0]!.reviewAt = Date.now() - 1;
+    snapshot.paused = true;
+    await f.session["poll"]();
+    expect(f.session.status().messages[0]!.status).toBe("waiting");
+    snapshot.paused = false;
+    await f.session["poll"]();
+    await f.session.resume();
+    expect(f.codex.calls.filter((m) => m === "turn/start")).toHaveLength(2);
+  } finally {
+    await f.close();
+  }
+});
+test("a pending compound task counts as work even when its native queue is empty", async () => {
+  const f = fixture();
+  try {
+    const snapshot = await pendingJob(f);
+    snapshot.companions[0]!.queues = {};
+    snapshot.tasks = [{ companionId: 1, status: "active" }];
+    await f.session["poll"]();
+    expect(f.session.status().messages[0]!.status).toBe("waiting");
+    snapshot.tasks = [];
+    await f.session["poll"]();
+    await f.session.resume();
+    expect(f.codex.calls.filter((m) => m === "turn/start")).toHaveLength(2);
+  } finally {
+    await f.close();
+  }
+});
+test("duplicate ingestion remains idempotent when the queue is full", async () => {
+  const f = fixture({ maxQueued: 1 });
+  try {
+    const first = f.session.enqueue("Mina", 1, "game", "Player", "game:world:1");
+    expect(f.session.enqueue("Mina", 1, "game", "Player", "game:world:1")).toBe(first);
+    expect(() => f.session.enqueue("Otra", 1)).toThrow("full");
+  } finally {
+    await f.close();
+  }
+});
+test("history retention does not drop an unfinished objective", async () => {
+  const f = fixture();
+  try {
+    await pendingJob(f);
+    for (let i = 0; i < 510; i++)
+      f.session.status().messages.push({
+        id: String(i),
+        at: "",
+        role: "assistant",
+        text: "ok",
+        source: "web",
+        companionId: 1,
+      });
+    f.session.enqueue("Pregunta", 2);
+    const saved = JSON.parse(readFileSync(join(f.directory, "session.json"), "utf8"));
+    expect(saved.messages.some((m: { status: string }) => m.status === "waiting")).toBe(true);
+    expect(saved.messages).toHaveLength(500);
   } finally {
     await f.close();
   }
