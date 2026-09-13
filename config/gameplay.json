@@ -7,7 +7,8 @@
     "craft",
     "build",
     "belt",
-    "combat"
+    "combat",
+    "blueprint"
   ],
   "starting_items": {
     "wood": 1,
@@ -15,6 +16,17 @@
     "firearm-magazine": 2,
     "burner-mining-drill": 1,
     "stone-furnace": 1
+  },
+  "resources": {
+    "aliases": {
+      "wood": {
+        "type": "tree",
+        "product": "wood"
+      }
+    },
+    "initial_radius": 8,
+    "search_radius": 400,
+    "list_limit": 20
   },
   "observation": {
     "entities": 240,
@@ -25,15 +37,35 @@
     "vision_radius": 32
   },
   "entity_capabilities": {
-    "assembling-machine": { "crafting": true },
-    "furnace": { "crafting": true },
-    "rocket-silo": { "crafting": true },
-    "container": { "inventory": "chest" },
-    "logistic-container": { "inventory": "chest" },
-    "linked-container": { "inventory": "chest" },
-    "cargo-wagon": { "inventory": "cargo_wagon" },
-    "mining-drill": { "mining": true, "drop": true },
-    "inserter": { "inserter": true, "drop": true }
+    "assembling-machine": {
+      "crafting": true
+    },
+    "furnace": {
+      "crafting": true
+    },
+    "rocket-silo": {
+      "crafting": true
+    },
+    "container": {
+      "inventory": "chest"
+    },
+    "logistic-container": {
+      "inventory": "chest"
+    },
+    "linked-container": {
+      "inventory": "chest"
+    },
+    "cargo-wagon": {
+      "inventory": "cargo_wagon"
+    },
+    "mining-drill": {
+      "mining": true,
+      "drop": true
+    },
+    "inserter": {
+      "inserter": true,
+      "drop": true
+    }
   },
   "retention": {
     "chat_messages": 100,
@@ -68,8 +100,6 @@
     "fuel_reach": 6,
     "walk_reach": 2,
     "ensure_item_max_depth": 4,
-    "wood_chop_reach": 3,
-    "wood_chop_max_trees": 10,
     "ensure_item_gather_max_attempts": 5,
     "ensure_item_container_search_radius": 5,
     "smelt_wait_ticks": 14400,
@@ -79,5 +109,9 @@
   "diagnostics": {
     "save_rare_symptoms": false,
     "save_cooldown_ticks": 3600
+  },
+  "blueprints": {
+    "max_plans": 32,
+    "progress_timeout_ticks": 18000
   }
 }

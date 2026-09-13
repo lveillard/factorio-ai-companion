@@ -18,7 +18,6 @@ local run_find_patch = steps.run_find_patch
 local run_verify_tile = steps.run_verify_tile
 local run_pick_orientation = steps.run_pick_orientation
 
-local WOOD_CHOP_REACH = u.settings.task_tuning.wood_chop_reach
 
 function M.init()
   storage.tasks = storage.tasks or {}
@@ -79,10 +78,10 @@ local function refresh_needs()
 end
 
 local function busy_elsewhere(cid)
-  return (storage.gather_queues and storage.gather_queues[cid])
-      or (storage.fuel_queues and storage.fuel_queues[cid])
-      or (storage.build_queues and storage.build_queues[cid])
-      or (storage.belt_queues and storage.belt_queues[cid])
+  for _,name in ipairs(u.settings.queues) do
+    if storage[name .. "_queues"] and storage[name .. "_queues"][cid] then return true end
+  end
+  return false
 end
 
 function M.tick()
@@ -165,16 +164,6 @@ function M.tick()
         elseif kind == "gather" or kind == "craft" then
           active.state = "ensuring"
           active.ensuring_kind = kind
-        elseif kind == "chop" then
-          if u.distance(c.entity.position, t.ctx.wood_target) <= WOOD_CHOP_REACH then
-            active.state = "ensuring"
-            active.ensuring_kind = "chop_mine"
-          else
-            storage.walking_queues[cid] = {target = t.ctx.wood_target}
-            active.state = "ensuring"
-            active.ensuring_kind = "chop_walk"
-            active.chop_deadline = u.approach_deadline(c.entity.position, t.ctx.wood_target)
-          end
         else
           ledger.fail_task(active.task_id, err2 or "ensure_item failed")
           storage.active_step[cid] = nil
@@ -294,37 +283,6 @@ function M.tick()
         local st = queues.get_craft_status(cid)
         if st.active then goto continue end
         active.state = "acting"
-      elseif active.ensuring_kind == "chop_walk" then
-        if not storage.walking_queues[cid] then
-          active.ensuring_kind = "chop_mine"  -- arrived -> fall through below, same tick
-        elseif active.chop_deadline and game.tick >= active.chop_deadline then
-          storage.walking_queues[cid] = nil
-          c.entity.walking_state = {walking = false}
-          local key = math.floor(t.ctx.wood_target.x) .. "," .. math.floor(t.ctx.wood_target.y)
-          t.ctx.wood_tried[key] = true
-          active.state = "acting"
-        else
-          goto continue
-        end
-      end
-      if active.state == "ensuring" and active.ensuring_kind == "chop_mine" then
-        local trees = c.entity.surface.find_entities_filtered{
-          type = "tree", position = t.ctx.wood_target, radius = 1}
-        if trees[1] and trees[1].valid then
-          local inv = c.entity.get_main_inventory()
-          local before = inv.get_item_count("wood")
-          trees[1].mine{inventory = inv}
-          if inv.get_item_count("wood") > before then
-            t.ctx.wood_chop_count = (t.ctx.wood_chop_count or 0) + 1
-          else
-            local key = math.floor(t.ctx.wood_target.x) .. "," .. math.floor(t.ctx.wood_target.y)
-            t.ctx.wood_tried[key] = true
-          end
-        else
-          local key = math.floor(t.ctx.wood_target.x) .. "," .. math.floor(t.ctx.wood_target.y)
-          t.ctx.wood_tried[key] = true
-        end
-        active.state = "acting"
       end
     end
     ::continue::
@@ -365,14 +323,10 @@ function M.get_diag(cid)
     walking_queue = storage.walking_queues and storage.walking_queues[cid] and {
       target = storage.walking_queues[cid].target,
     } or nil,
-    busy_gather = (storage.gather_queues and storage.gather_queues[cid]) and true or false,
-    busy_fuel = (storage.fuel_queues and storage.fuel_queues[cid]) and true or false,
-    busy_build = (storage.build_queues and storage.build_queues[cid]) and true or false,
-    busy_belt = (storage.belt_queues and storage.belt_queues[cid]) and true or false,
-    busy_harvest = (storage.harvest_queues and storage.harvest_queues[cid]) and true or false,
-    busy_craft = (storage.craft_queues and storage.craft_queues[cid]) and true or false,
-    busy_combat = (storage.combat_queues and storage.combat_queues[cid]) and true or false,
   }
+  for _,name in ipairs(u.settings.queues) do
+    out["busy_" .. name] = storage[name .. "_queues"] and storage[name .. "_queues"][cid] ~= nil or false
+  end
   if active and active.task_id then
     local t = storage.tasks[active.task_id]
     if t then

@@ -158,6 +158,8 @@ try {
   const completed1 = (await call("gather_status", { companionId: 1 })).status;
   const completed2 = (await call("gather_status", { companionId: 1 })).status;
   assert.equal(completed1.gathered, completed2.gathered);
+  assert.equal(completed1.state, "done");
+  assert.equal(completed2.state, "done");
   assert.ok(completed1.gathered >= 3, JSON.stringify(completed1));
   await call("gather", { companionId: 1, resource: "iron-ore", count: 20 });
   await call("item_craft_start", { companionId: 1, recipe: "iron-gear-wheel", count: 2 });
@@ -180,6 +182,7 @@ try {
       (item: any) => item.name === "coal" && item.count === 2 && item.quality === "normal",
     ),
   );
+  assert.equal(chestInventory.items.filter((item: any) => item.name === "coal").length, 1);
   await call("gather", { companionId: 1, resource: "iron-ore", count: 100 });
   await call("companion_stop", { companionId: 1 });
   const stopped = await game.observe(1);
@@ -233,6 +236,23 @@ try {
     [],
     "Machine inspection must not emit Lua errors",
   );
+  await rcon.sendCommand(
+    '/sc local s=game.surfaces[1]; s.create_entity{name="tree-01",position={-6,0}}; rcon.print("tree-ready")',
+  );
+  const tree = await call("resource_nearest", { companionId: 1, resourceType: "wood" });
+  assert.equal(tree.resource, "wood");
+  assert.equal(tree.name, "tree-01");
+  await call("gather", { companionId: 1, resource: "wood", count: 4 });
+  await until(async () => !(await call("gather_status", { companionId: 1 })).status.active, 60000);
+  const wood = (await call("gather_status", { companionId: 1 })).status;
+  assert.equal(wood.state, "done", JSON.stringify(wood));
+  assert.ok(wood.gathered >= 4, JSON.stringify(wood));
+  const capability = await call("companion_capabilities", { companionId: 1, recipe: "iron-plate" });
+  assert.equal(capability.recipe.hand_craftable, false);
+  assert.match(capability.recipe.reason, /not hand-craftable/);
+  assert.equal(capability.construction_robots.total, 0);
+  assert.deepEqual((await game.observe(1)).errors, [], "Wood gathering must not emit tick errors");
+  await (await import("./game-blueprints")).testBlueprints(game, rcon);
   console.log(
     `Real Factorio ${snapshot.factorio}: spawn, observation, Unicode chat, cursor reads, building, crafting, mining, cancellation and drill-to-furnace production passed.`,
   );

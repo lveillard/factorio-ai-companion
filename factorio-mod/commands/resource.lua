@@ -1,5 +1,6 @@
 local u = require("commands.init")
 local queues = require("commands.queues")
+local resources = require("commands.resource_query")
 
 
 u.register("resource_list", function(args)
@@ -9,14 +10,15 @@ u.register("resource_list", function(args)
     local filter = args.filter ~= "" and args.filter ~= "-" and args.filter or nil
     local radius = tonumber(args.radius) or 50
     local pos = c.entity.position
-    local res = c.entity.surface.find_entities_filtered{type = "resource", position = pos, radius = radius, limit = 20}
+    local selector, err = {type="resource"}, nil
+    if filter then selector, err = resources.resolve(filter) end
+    if not selector then u.error_response(err); return end
+    local res = resources.within(c.entity.surface, pos, selector, radius)
     local found = {}
     for _, r in ipairs(res) do
-      if not filter or r.name == filter then
-        found[#found + 1] = {name = r.name, position = {x = math.floor(r.position.x), y = math.floor(r.position.y)}, amount = r.amount, distance = math.floor(u.distance(pos, r.position))}
-      end
+      found[#found+1] = resources.describe(r, pos, selector.product)
+      if #found >= u.settings.resources.list_limit then break end
     end
-    table.sort(found, function(a, b) return a.distance < b.distance end)
     u.json_response({id = id, resources = found, count = #found})
   end)
 end)
@@ -113,11 +115,12 @@ u.register("resource_nearest", function(args)
     if not id then u.not_found(); return end
     local name = args.resourceType
     local pos = c.entity.position
-    local area = {{pos.x - 200, pos.y - 200}, {pos.x + 200, pos.y + 200}}
-    local es = c.entity.surface.find_entities_filtered{area = area, name = name, limit = 100}
-    if #es == 0 then u.json_response({id = id, error = "Not found"}); return end
-    local closest, min = nil, math.huge
-    for _, e in ipairs(es) do local d = u.distance(e.position, pos); if d < min then min, closest = d, e end end
-    u.json_response({id = id, resource = closest.name, position = {x = math.floor(closest.position.x), y = math.floor(closest.position.y)}, distance = math.floor(min), amount = closest.amount})
+    local selector, err = resources.resolve(name)
+    if not selector then u.error_response(err); return end
+    local closest = resources.nearest(c.entity.surface, pos, selector, u.settings.resources.search_radius)
+    if not closest then u.error_response("No " .. name .. " found within search radius"); return end
+    local result = resources.describe(closest, pos, selector.product)
+    result.id = id
+    u.json_response(result)
   end)
 end)

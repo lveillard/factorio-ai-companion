@@ -30,6 +30,159 @@ function run(source: string) {
   }
 }
 
+test("Lua: wood resolves to harvestable trees and failed gather validates before queuing", () =>
+  run(`
+  local resources=require("commands.resource_query")
+  local tree={valid=true,type="tree",name="tree-01",position={x=1,y=0},
+    prototype={mineable_properties={products={{name="wood",type="item",amount=4}}}}}
+  entity.surface.find_entities_filtered=function(args)
+    assert(args.name~="wood", "wood is a product, not an entity")
+    return args.type=="tree" and {tree} or {}
+  end
+  entity.surface.count_entities_filtered=function() return 0 end
+  entity.surface.find_non_colliding_position=function(_,p) return p end
+  entity.get_main_inventory().can_insert=function() return true end
+  assert(queues.start_gather(1,"does-not-exist",4).error and not storage.gather_queues[1])
+  assert(not queues.start_gather(1,"wood",4).error)
+  queues.tick_gather_queues(); queues.tick_gather_queues(); queues.tick_gather_queues()
+  assert(entity.selected==tree and entity.mining_state.mining)
+  items.wood=4; game.tick=100; queues.tick_gather_queues()
+  for _=1,2 do
+    local s=queues.get_gather_status(1)
+    assert(not s.active and s.state=="done" and s.gathered==4 and s.run_end_tick==100)
+  end
+  assert(#storage.errors==0)
+`));
+
+test("Lua: resource lookup sorts all candidates before limiting and filters by product", () =>
+  run(`
+  require("commands.resource")
+  local ores={}
+  for x=120,1,-1 do ores[#ores+1]={valid=true,type="resource",name="ore",amount=100,position={x=x,y=0},prototype=prototypes.entity.ore} end
+  entity.surface.find_entities_filtered=function(args)
+    assert(not args.limit and args.name=="ore")
+    local found={}; for _,ore in ipairs(ores) do if ore.position.x<=args.radius then found[#found+1]=ore end end
+    return found
+  end
+  local result; u.json_response=function(value) result=value end
+  u.handlers.resource_nearest{companionId=1,resourceType="ore"}
+  assert(result.position.x==1 and result.distance==1)
+  u.handlers.resource_list{companionId=1,filter="ore",radius=200}
+  assert(result.count==20 and result.resources[1].position.x==1 and result.resources[20].position.x==20)
+`));
+
+test("Lua: an exception terminates only the failed companion job and logs once", () =>
+  run(`
+  local core=require("commands.queues_core")
+  storage.companions[2]={entity=entity,name="Grace"}
+  storage.gather_queues[1]={state="find"};storage.gather_queues[2]={state="find"}
+  local ran=false
+  local function process(cid) if cid==1 then error("broken target") end; ran=true; return true end
+  core.process_queue("gather_queues",process);core.process_queue("gather_queues",process)
+  assert(ran and #storage.errors==1)
+  assert(core.previous("gather_queues",1).state=="failed")
+  assert(core.previous("gather_queues",2).state=="done")
+`));
+
+test("Lua: a chest reports one inventory despite the fuel enum alias and nearby ore", () =>
+  run(`
+  defines.inventory.chest=1;defines.inventory.fuel=1
+  local chest={valid=true,name="wooden-chest",type="container",prototype={items_to_place_this={{name="wooden-chest",count=1}}},position={x=1,y=0},
+    get_inventory=function(index) assert(index==1);return {valid=true,get_contents=function() return {{name="iron-plate",count=5,quality="normal"}} end} end,
+    get_fuel_inventory=function() return nil end}
+  entity.surface.find_entities_filtered=function() return {{valid=true,type="resource",prototype={},position={x=1,y=0}},chest} end
+  require("commands.companion")
+  local result;u.json_response=function(value) result=value end
+  u.handlers.companion_inventory{companionId=1,x=1,y=0}
+  assert(result.entity=="wooden-chest" and #result.items==1 and result.items[1].count==5)
+`));
+
+test("Lua: hand crafting distinguishes locked recipes, machine categories and missing items", () =>
+  run(`
+  entity.force.recipes.gear.enabled=false
+  assert(queues.start_craft(1,"gear",1).error:find("locked"))
+  entity.force.recipes.gear.enabled=true; prototypes.recipe.gear.category="smelting"
+  assert(queues.start_craft(1,"gear",1).error:find("not hand%-craftable"))
+  prototypes.recipe.gear.category="crafting";items.plate=0
+  assert(queues.start_craft(1,"gear",1).error=="Missing ingredients")
+  assert(not storage.craft_queues[1] and entity.crafting_queue_size==0)
+`));
+
+test("Lua: rotation targets the machine instead of a mod helper at the same position", () =>
+  run(`
+  local helper={valid=true,name="erm_attackable_entity_beacon",type="beacon",rotatable=true,position={x=1,y=0},prototype={}}
+  local drill={valid=true,name="burner-mining-drill",type="mining-drill",rotatable=true,position={x=1,y=0},
+    prototype={items_to_place_this={{name="burner-mining-drill",count=1}}},direction=0}
+  entity.surface.find_entities_filtered=function() return {helper,drill} end
+  local result;u.json_response=function(value) result=value end
+  require("commands.building")
+  u.handlers.building_rotate{companionId=1,x=1,y=0,direction=2}
+  assert(result.rotated=="burner-mining-drill" and drill.direction==defines.direction.south)
+  assert(helper.direction==nil)
+`));
+
+test("Lua: machine-only resources remain discoverable but cannot start a hand-mining job", () =>
+  run(`
+  prototypes.entity.oil={type="resource",mineable_properties={products={{name="crude-oil",type="fluid"}}}}
+  local query=require("commands.resource_query")
+  local selector=query.resolve("oil")
+  assert(selector and not selector.hand_mineable)
+  local oil={valid=true,name="oil",type="resource",amount=100,position={x=0,y=0},prototype=prototypes.entity.oil}
+  assert(query.available(oil,selector))
+  assert(queues.start_gather(1,"oil",1).error:find("mining machine"))
+  assert(not storage.gather_queues[1])
+`));
+
+test("Lua: extraction preserves quality and uses the shared inventory groups", () =>
+  run(`
+  require("commands.building")
+  defines.inventory.chest=1
+  local remaining=4
+  local inv={valid=true,get_contents=function() return {{name="iron-plate",quality="uncommon",count=remaining}} end,
+    remove=function(item) assert(item.quality=="uncommon");remaining=remaining-item.count;return item.count end,
+    insert=function(item) assert(item.quality=="uncommon");remaining=remaining+item.count;return item.count end}
+  local chest={valid=true,name="wooden-chest",type="container",position={x=1,y=0},
+    prototype={items_to_place_this={{name="wooden-chest",count=1}}},get_inventory=function() return inv end,
+    get_fuel_inventory=function() return nil end}
+  entity.surface.find_entities_filtered=function() return {chest} end
+  entity.insert=function(item) assert(item.quality=="uncommon");return 1 end
+  local result;u.json_response=function(value) result=value end
+  u.handlers.building_empty{companionId=1,x=1,y=0,itemName="iron-plate",count=3}
+  assert(result.extracted==1 and remaining==3)
+`));
+
+test("Lua: blueprint cancellation removes only its own remaining ghosts", () =>
+  run(`
+  local removed=0
+  local ghost={valid=true,destroy=function() removed=removed+1 end}
+  storage.blueprint_queues[1]={name="plan",state="building",targets={{ghost={valid=false},done=true},{ghost=ghost}},built=1}
+  local unrelated={valid=true,destroy=function() error("Another companion's ghost must survive") end}
+  storage.blueprint_queues[2]={targets={{ghost=unrelated}},state="building"}
+  require("commands.lifecycle").stop(1)
+  local status=queues.get_blueprint_status(1)
+  assert(removed==1 and status.state=="cancelled" and status.built==1 and status.total==2)
+  assert(storage.blueprint_queues[2] and items.plate==20)
+`));
+
+for (const nativeBuilt of [false, true])
+  test(`Lua: blueprint revival error refunds only an unbuilt entity (${nativeBuilt})`, () =>
+    run(`
+  entity.build_distance=10
+  local stock=1
+  local inv=entity.get_main_inventory()
+  inv.get_item_count=function() return stock end
+  inv.remove=function(item) stock=stock-item.count;return item.count end
+  inv.insert=function(item) stock=stock+item.count;return item.count end
+  local ghost={valid=true,ghost_prototype={items_to_place_this={{name="wooden-chest",count=1}}}}
+  ghost.revive=function() ghost.valid=${nativeBuilt ? "false" : "true"};error("Native event failed") end
+  ghost.destroy=function() ghost.valid=false end
+  storage.blueprint_queues[1]={name="plan",state="building",mode="manual",manages_timeout=true,progress_tick=0,built=0,
+    targets={{ghost=ghost,name="wooden-chest",quality="normal",position={x=1,y=0}}}}
+  queues.tick_blueprint_queues()
+  assert(queues.get_blueprint_status(1).state=="failed")
+  assert(stock==${nativeBuilt ? 0 : 1},"A native event must not duplicate or lose construction items")
+`));
+
 test("Lua: crafting finishes only when native outputs exist", () =>
   run(`
   assert(not queues.start_craft(1, "gear", 2).error)
@@ -106,7 +259,7 @@ test("Lua: machine inventories return names, quantities and quality without dupl
     [2]={valid=true,get_contents=function() return {{name="iron-ore",count=21,quality="normal"}} end},
     [3]={valid=true,get_contents=function() return {{name="iron-plate",count=4,quality="uncommon"}} end},
   }
-  local machine={valid=true,type="furnace",name="stone-furnace",position={x=1,y=0},get_inventory=function(slot) return slots[slot] end}
+  local machine={valid=true,type="furnace",name="stone-furnace",prototype={items_to_place_this={{name="stone-furnace",count=1}}},position={x=1,y=0},get_inventory=function(slot) return slots[slot] end, get_fuel_inventory=function() return slots[1] end, get_output_inventory=function() return slots[3] end}
   entity.surface.find_entities_filtered=function() return {machine} end
   local result; u.json_response=function(value) result=value end
   require("commands.companion")
@@ -136,7 +289,7 @@ test("Lua: belt pathfinding avoids occupied tiles and reports blocked endpoints"
 test("Lua: drill inspection never treats fuel as output or calls crafting-only APIs", () =>
   run(`
   local fuel={valid=true,get_contents=function() return {{name="coal",count=4,quality="normal"}} end}
-  local drill={valid=true,type="mining-drill",name="burner-mining-drill",position={x=1,y=0},
+  local drill={valid=true,type="mining-drill",name="burner-mining-drill",prototype={items_to_place_this={{name="burner-mining-drill",count=1}}},position={x=1,y=0},
     direction=defines.direction.south,force={name="player"},status=defines.entity_status.working,
     get_fuel_inventory=function() return fuel end,
     get_output_inventory=function() error("Fuel inventory alias must not be read as output") end,
@@ -175,12 +328,12 @@ test("Lua: shared machine inspection exposes real crafting output and production
 test("Lua: mining with a stuck selection changes tile without reporting completion", () =>
   run(`
   entity.surface.find_non_colliding_position=function() return nil end
-  local ore = {name="ore",type="resource",valid=true,amount=100,position={x=1,y=0}}
+  local ore = {name="ore",type="resource",valid=true,amount=100,position={x=1,y=0},prototype=prototypes.entity.ore}
   entity.surface.find_entities_filtered = function(args) return args.name and {ore} or {} end
   entity.get_main_inventory().can_insert = function() return true end
   entity.selected=ore
   entity.mining_state={mining=true}
-  storage.gather_queues[1]={state="mine",resource="ore",product="ore",start_count=0,target=60,
+  storage.gather_queues[1]={state="mine",resource="ore",selector={name="ore",product="ore"},product="ore",start_count=0,target=60,
     entity_pos={x=1,y=0},mine_gathered_at_entry=0,mine_stuck_ticks=u.settings.queue_tuning.mine_stuck_ticks}
   queues.tick_gather_queues()
   local q=storage.gather_queues[1]
@@ -190,11 +343,11 @@ test("Lua: mining with a stuck selection changes tile without reporting completi
 
 test("Lua: gathering skips ore covered by a machine", () =>
   run(`
-  local blocked={name="ore",type="resource",valid=true,amount=100,position={x=1,y=0}}
-  local free={name="ore",type="resource",valid=true,amount=100,position={x=4,y=0},prototype={mineable_properties={products={{name="ore"}}}}}
+  local blocked={name="ore",type="resource",valid=true,amount=100,position={x=1,y=0},prototype=prototypes.entity.ore}
+  local free={name="ore",type="resource",valid=true,amount=100,position={x=4,y=0},prototype=prototypes.entity.ore}
   entity.surface.find_entities_filtered=function(args)
     if args.name then return {blocked,free} end
-    return args.position.x==1 and {{valid=true,type="furnace"}} or {}
+    return args.position.x==1 and {{valid=true,type="furnace",prototype={items_to_place_this={{name="stone-furnace",count=1}}}}} or {}
   end
   entity.surface.count_entities_filtered=function() return 0 end
   entity.surface.find_non_colliding_position=function(_,p) return p end

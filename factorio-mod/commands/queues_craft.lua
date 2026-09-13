@@ -1,5 +1,6 @@
 local u = require("commands.init")
 local core = require("commands.queues_core")
+local capabilities = require("commands.capabilities")
 
 local M = {}
 
@@ -11,8 +12,9 @@ function M.start_craft(cid, recipe, count)
   if storage.craft_queues[cid] or c.entity.crafting_queue_size > 0 then
     return {error = "Crafting is already active; wait for item_craft_status before starting another recipe"}
   end
+  local error = capabilities.craft_error(c.entity,recipe)
+  if error then return {error=error} end
   local proto = prototypes.recipe[recipe]
-  if not proto then return {error = "Unknown recipe: " .. recipe} end
   local craftable = c.entity.get_craftable_count(recipe)
   if craftable < 1 then return {error = "Missing ingredients"} end
   local actual = math.min(count, craftable)

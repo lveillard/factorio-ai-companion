@@ -2,14 +2,23 @@
 Version: 0.18.2
 Date: 2026-09-13
   Bugfixes:
+    - Gather wood from trees, select the nearest resource before limiting results, and retain completed job outcomes.
+    - Isolate queue failures per companion and stop failed jobs without repeated tick errors.
+    - Ignore invisible mod helpers when selecting machines, and share inventory access without duplicate slots or lost quality.
+    - Check real character crafting categories and unlocked recipes before starting work.
     - Inspect drills and other non-crafting entities without calling crafting-only APIs.
     - Stop reporting drill fuel as machine output.
     - Keep launcher RCON settings outside Steam's synced configuration.
   Features:
+    - Save, inspect, import and export reusable blueprints; build manually with carried items or through construction robots.
+    - Track actual blueprint construction, material requirements and cancellation, including entity settings and paving tiles.
+    - Expose character reach, crafting capabilities and available construction robots to the agent.
     - Share machine observations between the map and building_info, including drill targets, discharge positions and crafting production counters.
     - Show connection guidance and mark the map stale while disconnected.
   Changes:
-    - Cover machine inspection and real drill-to-furnace production in regression tests.
+    - Generate tool contracts and drive queue scheduling, status and cleanup from shared configuration.
+    - Replace separate wood procurement code with the shared gathering pipeline; cancel pending work after mod configuration changes.
+    - Cover live gameplay failures and native manual/robot blueprint construction in regression tests.
 ---------------------------------------------------------------------------------------------------
 Version: 0.18.1
 Date: 2026-09-13

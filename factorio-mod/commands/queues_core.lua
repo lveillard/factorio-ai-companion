@@ -1,11 +1,15 @@
 local u = require("commands.init")
 
 local M = {}
+local resources = require("commands.resource_query")
+local cleanups = {}
+function M.register_cleanup(queue, fn) cleanups[queue]=fn end
 
 function M.previous(queue_name, cid)
   return storage.queue_results[queue_name] and storage.queue_results[queue_name][cid]
 end
 function M.finish_queue(queue_name, cid, q)
+  if cleanups[queue_name] then cleanups[queue_name](q) end
   q._finished = true
   q.finished_tick = game.tick
   q.run_end_tick = q.run_end_tick or game.tick
@@ -20,6 +24,11 @@ function M.finish_queue(queue_name, cid, q)
       q.state = "failed"
       q.error = q.error or "Job ended before the requested amount was produced"
     else q.state = "done" end
+  end
+  if queue_name ~= "craft_queues" and (q.state == "failed" or q.state == "cancelled") then
+    local c = u.get_companion(cid)
+    if c then c.entity.walking_state, c.entity.mining_state = {walking=false}, {mining=false} end
+    storage.walking_queues[cid] = nil
   end
   storage.queue_results[queue_name] = storage.queue_results[queue_name] or {}
   storage.queue_results[queue_name][cid] = q
@@ -67,7 +76,7 @@ function M.process_queue(queue_name, processor)
       local total = c.entity.get_inventory(defines.inventory.character_main).get_item_count()
       local pos = c.entity.position
       local moved = q._stale_pos and (u.distance(q._stale_pos, pos) > 5)
-      if (queue_name == "build_queues" and q.state == "stepping_away") or
+      if q.manages_timeout or (queue_name == "build_queues" and q.state == "stepping_away") or
         (queue_name == "craft_queues" and q.inflight and c.entity.crafting_queue_size > 0) then
         q._stale_total, q._stale_pos, q._stale_ticks = total, {x = pos.x, y = pos.y}, 0
       elseif q._stale_total == total and q._stale_pos and not moved then
@@ -107,8 +116,7 @@ function M.process_queue(queue_name, processor)
           else
             q.blacklist = q.blacklist or {}
             local added = 0
-            for _, e in ipairs(c.entity.surface.find_entities_filtered{
-              name = q.resource, position = q.entity_pos, radius = 15}) do
+            for _, e in ipairs(resources.within(c.entity.surface, q.entity_pos, q.selector, 15)) do
               local key = math.floor(e.position.x) .. "," .. math.floor(e.position.y)
               if not q.blacklist[key] then added = added + 1 end
               q.blacklist[key] = true
@@ -125,8 +133,7 @@ function M.process_queue(queue_name, processor)
         elseif queue_name == "gather_queues" and q.state == "mine" and q.entity_pos and q.resource then
           q.blacklist = q.blacklist or {}
           local added = 0
-          for _, e in ipairs(c.entity.surface.find_entities_filtered{
-            name = q.resource, position = q.entity_pos, radius = 15}) do
+          for _, e in ipairs(resources.within(c.entity.surface, q.entity_pos, q.selector, 15)) do
             local key = math.floor(e.position.x) .. "," .. math.floor(e.position.y)
             if not q.blacklist[key] then added = added + 1 end
             q.blacklist[key] = true
@@ -156,8 +163,15 @@ function M.process_queue(queue_name, processor)
           to_remove[#to_remove + 1] = cid
         end
       else
-        local should_remove = processor(cid, q, c)
-        if should_remove then to_remove[#to_remove + 1] = cid end
+        local ok, should_remove = pcall(processor, cid, q, c)
+        if not ok then
+          q.state, q.error = "failed", tostring(should_remove)
+          c.entity.mining_state, c.entity.walking_state = {mining=false}, {walking=false}
+          storage.walking_queues[cid] = nil
+          if queue_name == "craft_queues" then u.cancel_native_crafting(c.entity) end
+          u.log_error(q.error, queue_name .. " companion " .. cid)
+        end
+        if not ok or should_remove or q.state == "done" or q.state == "failed" then to_remove[#to_remove + 1] = cid end
       end
     end
   end

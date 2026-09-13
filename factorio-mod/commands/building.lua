@@ -106,15 +106,7 @@ u.register("building_rotate", function(args)
     if not id then u.not_found(); return end
     local x, y, dir = tonumber(args.x), tonumber(args.y), tonumber(args.direction)
     if not x or not y then u.error_response("Invalid coordinates"); return end
-    local es = c.entity.surface.find_entities_filtered{position = {x=x, y=y}, radius = 1}
-    local t, bd = nil, 1e18
-    for _, e in ipairs(es) do
-      if e.valid and e ~= c.entity and e.type ~= "character" and e.rotatable then
-        local dx, dy = e.position.x - x, e.position.y - y
-        local d = dx * dx + dy * dy
-        if d < bd then bd, t = d, e end
-      end
-    end
+    local t = entity_info.nearest(c.entity.surface,{x=x,y=y},1,function(e) return e.rotatable end)
     if not t then u.json_response({id = id, error = "No rotatable entity"}); return end
     if u.distance(c.entity.position, t.position) > (c.entity.reach_distance or 10) then
       u.json_response({id = id, error = "Too far"}); return   -- must be in reach to rotate (no action-at-a-distance)
@@ -134,14 +126,7 @@ u.register("building_info", function(args)
     if not id then u.not_found(); return end
     local x, y = tonumber(args.x), tonumber(args.y)
     if not x or not y then u.error_response("Invalid coordinates"); return end
-    local es = c.entity.surface.find_entities_filtered{position = {x=x, y=y}, radius = 2}
-    if #es == 0 then u.json_response({id = id, error = "Not found"}); return end
-    local t, min = nil, math.huge
-    for _, e in ipairs(es) do
-      if e.valid and e ~= c.entity and e.type ~= "character" and e.type ~= "resource" and e.type ~= "item-entity" then
-        local d = u.distance(e.position, {x=x, y=y}); if d < min then min, t = d, e end
-      end
-    end
+    local t = entity_info.nearest(c.entity.surface,{x=x,y=y},2)
     if not t then u.json_response({id = id, error = "Not found"}); return end
     u.json_response({id = id, entity = entity_info.describe(t, true)})
   end)
@@ -200,29 +185,17 @@ u.register("building_empty", function(args)
     if u.distance(c.entity.position, pos) > (c.entity.reach_distance or 10) then
       u.json_response({id = id, error = "Too far"}); return   -- must be in reach to extract (no action-at-a-distance)
     end
-    local es = c.entity.surface.find_entities_filtered{position = pos, radius = 5}
-    local target, bd = nil, 1e18
-    for _, e in ipairs(es) do
-      if e.valid and e ~= c.entity and e.type ~= "resource" then
-        local dx, dy = e.position.x - pos.x, e.position.y - pos.y
-        local d = dx * dx + dy * dy
-        if d < bd then bd, target = d, e end
-      end
-    end
+    local target = entity_info.nearest(c.entity.surface,pos,5)
     local ext = 0
     if target then
-      for _, it in ipairs({defines.inventory.chest, defines.inventory.crafter_output,
-                           defines.inventory.fuel}) do
-        local inv = target.get_inventory(it)
-        if inv then
-          local av = inv.get_item_count(item)
-          if av > 0 then
-            local rm = inv.remove{name = item, count = math.min(count - ext, av)}
-            if rm > 0 then
-              local ins = c.entity.insert{name = item, count = rm}
-              if ins < rm then inv.insert{name = item, count = rm - ins} end
-              ext = ext + ins
-            end
+      for _, group in ipairs(entity_info.inventories(target)) do
+        local inv = group.inventory
+        for _, stack in ipairs(u.inventory_contents(inv)) do
+          if stack.name == item and ext < count then
+            local rm = inv.remove{name=item,count=math.min(count-ext,stack.count),quality=stack.quality}
+            local ins = c.entity.insert{name=item,count=rm,quality=stack.quality}
+            if ins < rm then inv.insert{name=item,count=rm-ins,quality=stack.quality} end
+            ext = ext + ins
           end
         end
         if ext >= count then break end
@@ -284,15 +257,7 @@ u.register("building_fill", function(args)
     local inv = c.entity.get_inventory(defines.inventory.character_main)
     local have = inv.get_item_count(item)
     if have == 0 then u.json_response({id = id, error = "No " .. item}); return end
-    local es = c.entity.surface.find_entities_filtered{position = pos, radius = 3}
-    local target, bd = nil, 1e18
-    for _, e in ipairs(es) do
-      if e.valid and e ~= c.entity and e.type ~= "resource" then
-        local dx, dy = e.position.x - pos.x, e.position.y - pos.y
-        local d = dx * dx + dy * dy
-        if d < bd then bd, target = d, e end
-      end
-    end
+    local target = entity_info.nearest(c.entity.surface,pos,3)
     local ins = 0
     if target then
       local r = target.insert{name = item, count = math.min(count, have)}

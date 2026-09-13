@@ -8,6 +8,38 @@ local function target(e)
   return e and e.valid and {name=e.name, type=e.type, position=position(e.position)} or nil
 end
 
+function M.is_building(e)
+  return e.valid and e.type ~= "character" and e.type ~= "resource" and e.type ~= "tree"
+    and e.prototype.items_to_place_this and e.prototype.items_to_place_this[1] ~= nil
+end
+
+function M.nearest(surface, pos, radius, accept)
+  local closest, distance = nil, math.huge
+  for _,e in ipairs(surface.find_entities_filtered{position=pos,radius=radius}) do
+    -- Mod helper entities may share the exact position of a real machine.
+    if M.is_building(e) and (not accept or accept(e)) then
+      local d = u.distance(e.position,pos)
+      if d < distance then closest,distance=e,d end
+    end
+  end
+  return closest
+end
+
+function M.inventories(e)
+  local caps = u.settings.entity_capabilities[e.type] or {}
+  local result = {}
+  local function add(slot, inventory)
+    if inventory and inventory.valid then result[#result+1] = {slot=slot, inventory=inventory} end
+  end
+  if caps.crafting then
+    add("input", e.get_inventory(defines.inventory.crafter_input))
+    add("output", e.get_output_inventory())
+  end
+  if caps.inventory then add("inventory", e.get_inventory(defines.inventory[caps.inventory])) end
+  add("fuel", e.get_fuel_inventory())
+  return result
+end
+
 -- Shared by world_observe and building_info. LuaEntity exposes methods even when the
 -- entity's native class cannot use them; inventory indices also alias across classes.
 function M.describe(e, detailed)
@@ -17,18 +49,13 @@ function M.describe(e, detailed)
   if e.type == "resource" then result.amount = e.amount end
   if not detailed or e.force.name == "neutral" then return result end
   local capabilities = u.settings.entity_capabilities[e.type] or {}
-  result.fuel = u.inventory_contents(e.get_fuel_inventory())
+  for _, group in ipairs(M.inventories(e)) do result[group.slot] = u.inventory_contents(group.inventory) end
   result.energy = e.energy
   if capabilities.crafting then
-    result.input = u.inventory_contents(e.get_inventory(defines.inventory.crafter_input))
-    result.output = u.inventory_contents(e.get_output_inventory())
     local recipe = e.get_recipe()
     result.recipe = recipe and recipe.name
     result.crafting_progress = e.crafting_progress
     result.products_finished = e.products_finished
-  end
-  if capabilities.inventory then
-    result.inventory = u.inventory_contents(e.get_inventory(defines.inventory[capabilities.inventory]))
   end
   if capabilities.mining then
     result.mining_target = target(e.mining_target)

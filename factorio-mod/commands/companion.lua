@@ -1,6 +1,7 @@
 local lifecycle = require("commands.lifecycle")
 local u = require("commands.init")
 local queues = require("commands.queues")
+local entity_info = require("commands.entity_info")
 
 u.register("companion_list", function(args)
   u.safe_command(function()
@@ -162,18 +163,12 @@ u.register("companion_inventory", function(args)
     if not id then u.not_found(); return end
     local x, y = tonumber(args.x), tonumber(args.y)
     if x and y then
-      local es = c.entity.surface.find_entities_filtered{position = {x=x, y=y}, radius = 2}
-      local t
-      for _, e in ipairs(es) do if e.valid and e ~= c.entity then t = e; break end end
+      local t = entity_info.nearest(c.entity.surface,{x=x,y=y},2)
       if not t then u.json_response({id = id, error = "No entity"}); return end
       local items = {}
-      -- furnace_source/furnace_result are stale 1.x defines removed in Factorio 2.0's
-      -- inventory unification (nil here; get_inventory(nil) throws) -- crafter_input/
-      -- crafter_output are the correct 2.0+ names for both furnaces and assemblers.
-      for _, it in ipairs({{defines.inventory.chest, "chest"}, {defines.inventory.crafter_input, "in"}, {defines.inventory.crafter_output, "out"}, {defines.inventory.fuel, "fuel"}}) do
-        local inv = (it[2] ~= "chest" or t.type == "container" or t.type == "logistic-container") and t.get_inventory(it[1]) or nil
-        for _, item in ipairs(u.inventory_contents(inv)) do
-          items[#items + 1] = {name = item.name, count = item.count, quality = item.quality, slot = it[2]}
+      for _, group in ipairs(entity_info.inventories(t)) do
+        for _, item in ipairs(u.inventory_contents(group.inventory)) do
+          items[#items + 1] = {name = item.name, count = item.count, quality = item.quality, slot = group.slot}
         end
       end
       u.json_response({id = id, entity = t.name, items = items})

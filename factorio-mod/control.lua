@@ -44,6 +44,7 @@ end)
 
 script.on_configuration_changed(function()
   init_storage()
+  for id in pairs(storage.companions) do lifecycle.stop(id) end
   game.print("[AI Companion] Updated to v" .. MOD_VERSION, u.print_color(u.COLORS.system))
 end)
 
@@ -496,18 +497,14 @@ local function process_walking_queues()
   end
 end
 
-script.on_nth_tick(5, function(ev)
+script.on_nth_tick(u.settings.queue_tuning.tick_interval, function(ev)
   if ev.tick % 1800 == 0 then cleanup_messages() end
   -- Update map markers every 30 ticks (0.5 sec)
   if ev.tick % 30 == 0 then update_companion_markers() end
   -- Process all tick-based queues (each guarded so one failure can't kill the rest)
-  guard_tick("harvest", queues.tick_harvest_queues, ev.tick)
-  guard_tick("gather",  queues.tick_gather_queues,  ev.tick)
-  guard_tick("fuel",    queues.tick_fuel_queues,    ev.tick)
-  guard_tick("craft",   queues.tick_craft_queues,   ev.tick)
-  guard_tick("build",   queues.tick_build_queues,   ev.tick)
-  guard_tick("belt",    queues.tick_belt_queues,    ev.tick)
-  guard_tick("combat",  queues.tick_combat_queues,  ev.tick)
+  for _, name in ipairs(u.settings.queues) do
+    if name ~= "walking" then guard_tick(name, queues["tick_" .. name .. "_queues"], ev.tick) end
+  end
   guard_tick("walking", process_walking_queues,     ev.tick)
   guard_tick("orphan_mining", queues.tick_orphan_mining_cleanup, ev.tick)
   guard_tick("task_pool", task_pool.tick, ev.tick)

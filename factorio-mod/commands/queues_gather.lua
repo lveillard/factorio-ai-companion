@@ -1,5 +1,7 @@
 local u = require("commands.init")
 local core = require("commands.queues_core")
+local resources = require("commands.resource_query")
+local entity_info = require("commands.entity_info")
 
 local _tile_key = core.tile_key
 local valid_companion = core.valid_companion
@@ -26,50 +28,20 @@ function M.get_mine_diag(cid)
   return storage.mine_diag[cid] or {}
 end
 
-local NON_BUILDING_TYPES = {
-  resource = true, character = true, tree = true, ["simple-entity"] = true,
-  cliff = true, ["item-entity"] = true, ["item-request-proxy"] = true,
-  unit = true, ["unit-spawner"] = true,
-}
 local function building_covers_tile(surf, position)
   for _, e in ipairs(surf.find_entities_filtered{position = position, radius = 1}) do
-    if e.valid and not NON_BUILDING_TYPES[e.type] then return true end
+    if entity_info.is_building(e) then return true end
   end
   return false
 end
 
-local function find_reachable_resource(surf, from, resource, blacklist)
-  local ores = surf.find_entities_filtered{name = resource, position = from, radius = 400}
-  table.sort(ores, function(a, b) return u.distance(a.position, from) < u.distance(b.position, from) end)
-  for _, e in ipairs(ores) do
-    if e.valid and (e.amount or 0) > 0
-       and not (blacklist and blacklist[_tile_key(e.position)])
-       and not building_covers_tile(surf, e.position)
-       and surf.count_entities_filtered{type = "unit-spawner", position = e.position, radius = 20} == 0
-       and surf.find_non_colliding_position("character", e.position, 2.5, 0.5) then
-      return e
-    end
-  end
-  local total = #ores
-  local depleted, blacklisted, built_on, near_spawner, no_stand_pos = 0, 0, 0, 0, 0
-  for _, e in ipairs(ores) do
-    if e.valid then
-      if (e.amount or 0) <= 0 then depleted = depleted + 1
-      elseif blacklist and blacklist[_tile_key(e.position)] then blacklisted = blacklisted + 1
-      elseif building_covers_tile(surf, e.position) then built_on = built_on + 1
-      elseif surf.count_entities_filtered{type = "unit-spawner", position = e.position, radius = 20} > 0 then
-        near_spawner = near_spawner + 1
-      elseif not surf.find_non_colliding_position("character", e.position, 2.5, 0.5) then
-        no_stand_pos = no_stand_pos + 1
-      end
-    end
-  end
-  u.log_error(string.format(
-    "find_reachable_resource: no usable %s within 400 tiles of (%.1f,%.1f) -- total=%d "
-    .. "depleted=%d blacklisted=%d built_on=%d near_spawner=%d no_stand_pos=%d",
-    resource, from.x, from.y, total, depleted, blacklisted, built_on, near_spawner, no_stand_pos),
-    "gather_queue")
-  return nil
+local function find_reachable_resource(surf, from, selector, blacklist)
+  return resources.nearest(surf, from, selector, u.settings.resources.search_radius, function(e)
+    return not (blacklist and blacklist[_tile_key(e.position)])
+      and not building_covers_tile(surf, e.position)
+      and surf.count_entities_filtered{type="unit-spawner",position=e.position,radius=20} == 0
+      and surf.find_non_colliding_position("character",e.position,2.5,0.5) ~= nil
+  end)
 end
 
 local SELECT_FAIL_RESPAWN_STREAK = u.settings.queue_tuning.select_fail_respawn_streak
@@ -98,6 +70,10 @@ core.register_respawn_fn(respawn_companion_entity)
 function M.start_gather(cid, resource, count, exclude, from_task_pool)
   local c = valid_companion(cid)
   if not c then return {error = "Invalid companion"} end
+  local selector, err = resources.resolve(resource)
+  if not selector then return {error=err} end
+  if not selector.hand_mineable then return {error="Resource requires a mining machine: " .. resource} end
+  selector.hand_only = true
   if not from_task_pool and storage.active_step and storage.active_step[cid] then
     return {error = "companion busy with an active task-pool step"}
   end
@@ -107,7 +83,8 @@ function M.start_gather(cid, resource, count, exclude, from_task_pool)
       blacklist[_tile_key(p)] = true
     end
   end
-  storage.gather_queues[cid] = {resource = resource, target = count, state = "find",
+  storage.gather_queues[cid] = {resource = resource, selector=selector, product=selector.product,
+    start_count=c.entity.get_main_inventory().get_item_count(selector.product), target = count, state = "find",
     last_mine_tick = 0, blacklist = blacklist,
     run_start_tick = game.tick}
   return {started = true, resource = resource, target = count}
@@ -119,11 +96,9 @@ function M.tick_gather_queues()
     local inv = c.entity.get_main_inventory()
     if q.state == "done" then return false end
     if q.state == "find" then
-      local e = find_reachable_resource(surf, c.entity.position, q.resource, q.blacklist)
+      local e = find_reachable_resource(surf, c.entity.position, q.selector, q.blacklist)
       if not e then
-        q.find_retry_deadline = q.find_retry_deadline or (game.tick + 300)
-        if game.tick < q.find_retry_deadline then return false end
-        q.state, q.error = "failed", "No reachable resource remains before target was reached"
+        q.state, q.error = "failed", "No reachable " .. q.resource .. " within search radius"
         return false
       end
       local mp = e.prototype.mineable_properties
@@ -136,7 +111,6 @@ function M.tick_gather_queues()
         return false
       end
       q.entity_pos = {x = e.position.x, y = e.position.y}
-      q.product = mp.products[1].name
       if not q.start_count then q.start_count = inv.get_item_count(q.product) end
       q.approach_deadline = u.approach_deadline(c.entity.position, e.position)
       storage.walking_queues[cid] = {target = surf.find_non_colliding_position("character", e.position, 1, 0.5) or e.position}
@@ -198,16 +172,16 @@ function M.tick_gather_queues()
       local mine_diag_pos = {x = c.entity.position.x, y = c.entity.position.y}
       local res, best_d
       local kept = q.last_res
-      if kept and kept.valid and (kept.amount or 0) > 0
+      if kept and resources.available(kept, q.selector)
          and not building_covers_tile(surf, kept.position) then
         local d = u.distance(c.entity.position, kept.position)
         if d <= MINE_ADJACENT_RANGE then res, best_d = kept, d end
       end
       if not res then
-        local candidates = surf.find_entities_filtered{name = q.resource, position = q.entity_pos, radius = 2}
+        local candidates = resources.within(surf, q.entity_pos, q.selector, 2)
         best_d = 1e18
         for _, e in ipairs(candidates) do
-          if e.valid and (e.amount or 0) > 0 and not building_covers_tile(surf, e.position) then
+          if not building_covers_tile(surf, e.position) then
             local d = u.distance(c.entity.position, e.position)
             if d < best_d then best_d, res = d, e end
           end
@@ -248,7 +222,7 @@ function M.tick_gather_queues()
             area = clear_area, type = {"tree", "simple-entity"}}
           local cleared = 0
           for _, obs in ipairs(obstacles) do
-            if obs.valid then
+            if obs.valid and obs ~= res then
               obs.mine{inventory = c.entity.get_main_inventory()}
               cleared = cleared + 1
             end
@@ -359,15 +333,10 @@ function M.get_gather_status(cid)
     selected_name = c.entity.selected and c.entity.selected.name or nil
     mining = c.entity.mining_state and c.entity.mining_state.mining or false
   end
-  if q.state == "done" then
-    return {active = false, resource = q.resource, target = q.target, gathered = have,
-      blacklist = bl, entity_pos = q.entity_pos,
-      selected = selected_name, mining_state_mining = mining,
-      run_start_tick = q.run_start_tick, run_end_tick = q.run_end_tick}
-  end
-  return {active = not q._finished, resource = q.resource, target = q.target, gathered = have,
+  return {active = not q._finished and q.state ~= "done" and q.state ~= "failed", resource = q.resource, target = q.target, gathered = have,
     state = q.state, error = q.error, blacklist = bl, entity_pos = q.entity_pos,
-    selected = selected_name, mining_state_mining = mining}
+    selected = selected_name, mining_state_mining = mining,
+    run_start_tick = q.run_start_tick, run_end_tick = q.run_end_tick or q.finished_tick}
 end
 
 return M

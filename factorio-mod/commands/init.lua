@@ -117,10 +117,15 @@ function M.error_response(msg, ctx)
   M.json_response({error = tostring(msg)})
 end
 
+function M.reject(message)
+  error({expected=true,message=message},0)
+end
+
 function M.safe_command(callback)
   local ok, err = pcall(callback)
   if not ok then
-    M.error_response(err)
+    if type(err)=="table" and err.expected then M.json_response({error=err.message})
+    else M.error_response(err) end
   end
 end
 

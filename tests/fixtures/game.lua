@@ -3,7 +3,9 @@ defines = {direction={north=0,east=4,south=8,west=12}, inventory={character_main
 math.atan2 = math.atan
 storage = {companions={}, walking_queues={}, tasks={}, reserved={}, active_step={}, path_requests={}, errors={}}
 game = {tick=0, print=function() end, forces={}, surfaces={}}
-prototypes = {recipe={gear={energy=0.5}}, entity={}}
+prototypes = {recipe={gear={energy=0.5,category="crafting",ingredients={}}}, entity={
+  ore={type="resource",mineable_properties={products={{type="item",name="ore"}}}}
+}}
 items = {plate=20}
 local inventory = {valid=true}
 inventory.get_item_count = function(name)
@@ -15,7 +17,9 @@ inventory.get_contents = function()
 end
 entity = {valid=true, position={x=0,y=0}, crafting_queue={}, crafting_queue_size=0,
   crafting_queue_progress=0, mining_state={mining=false}, walking_state={walking=false},
-  force={recipes={}, technologies={}}, surface={}}
+  prototype={crafting_categories={crafting=true}},
+  force={recipes={gear={enabled=true}}, technologies={}}, surface={}}
+entity.surface.find_logistic_networks_by_construction_area=function() return {} end
 entity.get_main_inventory = function() return inventory end
 entity.get_inventory = function() return inventory end
 entity.get_craftable_count = function() return math.floor(items.plate/2) end

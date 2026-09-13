@@ -1,18 +1,31 @@
 local u = require("commands.init")
 local queues = require("commands.queues")
+local capabilities = require("commands.capabilities")
 
 local M = {}
 
-local HAND_CRAFTABLE_CATEGORIES = {["crafting"] = true, ["hand-crafting"] = true}
 local ENSURE_ITEM_MAX_DEPTH = u.settings.task_tuning.ensure_item_max_depth
-local WOOD_CHOP_MAX_TREES = u.settings.task_tuning.wood_chop_max_trees
 local ENSURE_ITEM_GATHER_MAX_ATTEMPTS = u.settings.task_tuning.ensure_item_gather_max_attempts
 local ENSURE_ITEM_CONTAINER_SEARCH_RADIUS = u.settings.task_tuning.ensure_item_container_search_radius
 local SMELT_WAIT_TICKS = u.settings.task_tuning.smelt_wait_ticks
 local ENSURE_ITEM_FURNACE_SEARCH_RADIUS = u.settings.task_tuning.ensure_item_furnace_search_radius
 
-local function resolve_recipe(item)
+local function resolve_recipe(entity, item)
   local r = prototypes.recipe[item]
+  local name = item
+  if not r then
+    local names = {}
+    for recipe_name, recipe in pairs(entity.force.recipes) do
+      if recipe.enabled then
+        for _, product in ipairs(recipe.products) do
+          if product.type == "item" and product.name == item then names[#names+1] = recipe_name; break end
+        end
+      end
+    end
+    table.sort(names)
+    name = names[1]
+    r = name and prototypes.recipe[name]
+  end
   if not r then return nil end
   local ingredients = {}
   for _, x in ipairs(r.ingredients) do
@@ -20,10 +33,9 @@ local function resolve_recipe(item)
   end
   local yield = 1
   for _, p in ipairs(r.products) do
-    if p.name == item then yield = p.amount; break end
+    if p.name == item then yield = p.amount or p.amount_min or 1; break end
   end
-  local hand_craftable = HAND_CRAFTABLE_CATEGORIES[r.category] or false
-  return {ingredients = ingredients, yield = yield, hand_craftable = hand_craftable}
+  return {name=name, ingredients = ingredients, yield = yield, hand_craftable = not capabilities.craft_error(entity,name)}
 end
 
 local function pull_nearby(c, item, deficit, output)
@@ -70,31 +82,7 @@ function M.start_ensure_item_action(c, cid, t)
     return nil, "ensure_item recursion depth exceeded for " .. need.item ..
       " (likely a recipe-chain or naming problem, not a normal case)"
   end
-  if need.item == "wood" then
-    t.ctx.wood_tried = t.ctx.wood_tried or {}
-    t.ctx.wood_chop_count = t.ctx.wood_chop_count or 0
-    if t.ctx.wood_chop_count >= WOOD_CHOP_MAX_TREES then
-      return nil, "could not chop enough wood after " .. WOOD_CHOP_MAX_TREES .. " trees"
-    end
-    local WOOD_SEARCH_RADII = {20, 50, 100, 200}
-    local best, best_d = nil, math.huge
-    for _, radius in ipairs(WOOD_SEARCH_RADII) do
-      local trees = c.entity.surface.find_entities_filtered{
-        type = "tree", position = c.entity.position, radius = radius}
-      for _, tr in ipairs(trees) do
-        local key = math.floor(tr.position.x) .. "," .. math.floor(tr.position.y)
-        if tr.valid and not t.ctx.wood_tried[key] then
-          local d = u.distance(c.entity.position, tr.position)
-          if d < best_d then best, best_d = tr, d end
-        end
-      end
-      if best then break end
-    end
-    if not best then return nil, "no reachable tree found for wood" end
-    t.ctx.wood_target = {x = best.position.x, y = best.position.y}
-    return "chop"
-  end
-  local recipe = resolve_recipe(need.item)
+  local recipe = resolve_recipe(c.entity, need.item)
   if not recipe then
     local deficit = need.count - inv.get_item_count(need.item)
     local pulled = pull_nearby(c, need.item, deficit, false)
@@ -134,14 +122,14 @@ function M.start_ensure_item_action(c, cid, t)
       "enough within " .. SMELT_WAIT_TICKS .. " ticks (needs a real machine, e.g. smelting)"
   end
   for _, ing in ipairs(recipe.ingredients) do
-    local needed_amount = math.ceil(need.count / recipe.yield) * ing.amount
+    local needed_amount = math.ceil((need.count - inv.get_item_count(need.item)) / recipe.yield) * ing.amount
     if inv.get_item_count(ing.name) < needed_amount then
       stack[#stack + 1] = {item = ing.name, count = needed_amount}
       return "push"
     end
   end
-  local craft_count = math.ceil(need.count / recipe.yield)
-  local r = queues.start_craft(cid, need.item, craft_count)
+  local craft_count = math.ceil((need.count - inv.get_item_count(need.item)) / recipe.yield)
+  local r = queues.start_craft(cid, recipe.name, craft_count)
   if r.error then return nil, r.error end
   return "craft"
 end

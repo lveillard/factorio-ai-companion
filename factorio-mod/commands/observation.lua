@@ -1,5 +1,6 @@
 local u = require("commands.init")
 local entity_info = require("commands.entity_info")
+local capabilities = require("commands.capabilities")
 local M = {}
 local limits = u.settings.observation
 
@@ -21,7 +22,8 @@ local function queues(cid)
       result[name] = {active = q.state ~= "done" and not q.done and not q.failed,
         state = q.state, target = type(q.target) == "number" and q.target or nil,
         harvested = q.harvested, gathered = q.gathered, crafted = q.crafted,
-        recipe = q.recipe, resource = q.resource, error = q.error, failed = q.failed}
+        recipe = q.recipe, resource = q.resource, error = q.error, failed = q.failed,
+        blueprint = q.name, built=q.built, total=q.targets and #q.targets, waiting=q.waiting, mode=q.mode}
     end
   end
   return result
@@ -32,7 +34,8 @@ local function last_jobs(cid)
   for _, name in ipairs(u.settings.queues) do
     local q = storage.queue_results and storage.queue_results[name .. "_queues"] and storage.queue_results[name .. "_queues"][cid]
     if q then result[name] = {state=q.state, error=q.error, finished_tick=q.finished_tick, run_start_tick=q.run_start_tick, run_end_tick=q.run_end_tick,
-      gathered=q.gathered, crafted=q.crafted, harvested=q.harvested, resource=q.resource, recipe=q.recipe} end
+      gathered=q.gathered, crafted=q.crafted, harvested=q.harvested, resource=q.resource, recipe=q.recipe,
+      blueprint=q.name,built=q.built,total=q.targets and #q.targets,mode=q.mode} end
   end
   return result
 end
@@ -61,7 +64,8 @@ u.register("world_observe", function(args)
       if c.entity and c.entity.valid then
         result.companions[#result.companions + 1] = {id = id, name = c.name, surface = c.entity.surface.name,
           position = position(c.entity.position), health = c.entity.health, max_health = c.entity.max_health,
-          inventory = contents(c.entity.get_main_inventory()), queues = queues(id), last_jobs = last_jobs(id)}
+          inventory = contents(c.entity.get_main_inventory()), queues = queues(id), last_jobs = last_jobs(id),
+          capabilities = capabilities.describe(c.entity)}
       else result.companions[#result.companions + 1] = {id = id, name = c.name, dead = true} end
     end
     table.sort(result.companions, function(a, b) return a.id < b.id end)

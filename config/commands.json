@@ -2403,5 +2403,202 @@
       ],
       "additionalProperties": false
     }
+  },
+  "companion_capabilities": {
+    "description": "Inspect actual hand-crafting categories, reach and construction robots; optionally check a recipe and its ingredients.",
+    "execution": "game",
+    "effect": "read",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companionId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "recipe": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "companionId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "blueprint_save": {
+    "description": "Save a reusable native blueprint from an import string OR structured entities. Local coordinates use native blueprint anchoring. Reusing a name replaces that plan.",
+    "execution": "game",
+    "effect": "act",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "blueprint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150000
+        },
+        "entities": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 512,
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "x": {
+                "type": "number",
+                "minimum": -256,
+                "maximum": 256
+              },
+              "y": {
+                "type": "number",
+                "minimum": -256,
+                "maximum": 256
+              },
+              "direction": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3,
+                "default": 0
+              },
+              "recipe": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "quality": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              }
+            },
+            "required": [
+              "name",
+              "x",
+              "y"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "blueprint_inspect": {
+    "description": "List saved blueprints, or inspect one: material bill, missing carried items, locked recipes and manual construction limits. Optionally export its native blueprint string.",
+    "execution": "game",
+    "effect": "read",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companionId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "export": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "companionId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "blueprint_build": {
+    "description": "Build a saved blueprint on a clear site. Auto uses construction robots when they cover every position; otherwise walks and consumes carried items. Native ghosts preserve blueprint settings. Completion means real construction, not ghost placement. Stop cancels remaining ghosts.",
+    "execution": "game",
+    "effect": "act",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companionId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "x": {
+          "type": "number",
+          "minimum": -1000000,
+          "maximum": 1000000
+        },
+        "y": {
+          "type": "number",
+          "minimum": -1000000,
+          "maximum": 1000000
+        },
+        "direction": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 0
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "manual",
+            "robots"
+          ],
+          "default": "auto"
+        }
+      },
+      "required": [
+        "companionId",
+        "name",
+        "x",
+        "y"
+      ],
+      "additionalProperties": false
+    },
+    "before": [
+      "companion_stop"
+    ]
+  },
+  "blueprint_status": {
+    "description": "Read blueprint construction progress and blockers; final results remain readable after completion or cancellation.",
+    "execution": "game",
+    "effect": "read",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "companionId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "required": [
+        "companionId"
+      ],
+      "additionalProperties": false
+    }
   }
 }
