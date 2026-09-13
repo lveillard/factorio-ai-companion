@@ -1,4 +1,269 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.16.101
+Date: 2026-07-18
+  Bugfixes:
+    - start_ensure_item_action's raw-resource fallback (task_pool.lua) only ever checked
+      the companion's OWN carried inventory before hand-mining, never a nearby chest --
+      live-caught: the companion hand-mined stone right next to a FULL (800/16 slots)
+      stone chest sitting immediately adjacent to her own drill. Fixed: before falling
+      back to hand-mining, pull from the nearest container within 5 tiles (mirrors
+      fac_building_empty's own chest-extraction idiom exactly, including its nearest-not-
+      first tie-break), only gathering whatever deficit remains after that.
+    - Both the new chest-pull helper above and the pre-existing fac_building_empty
+      (building.lua) ignored LuaEntity.insert()'s own return value, assuming the full
+      removed amount was always successfully placed into the companion's inventory --
+      independent review caught this: a genuinely full companion inventory would
+      silently LOSE the un-placed remainder (already removed from the source
+      container, never actually held) and, for the new ensure_item path, could report
+      a false "satisfied" to the task pool. Both now use insert()'s real return value
+      and put back whatever didn't fit.
+---------------------------------------------------------------------------------------------------
+Version: 0.16.26
+Date: 2026-07-06
+  (0.16.26 is a changelog-only update -- adds this file's own missing 0.16.20-0.16.25
+  entries plus a new automated web-publish mechanism (scripts/publish_mod_to_web.sh +
+  .githooks/post-commit) -- no functional change to the mod itself vs 0.16.25.)
+---------------------------------------------------------------------------------------------------
+Version: 0.16.25
+Date: 2026-07-06
+  Bugfixes:
+    - tick_harvest_queues (used by fac_resource_mine, and therefore every Python-side
+      mine_and_wait call) never checked TRUE ~2-tile adjacency to the specific resource
+      entity start_mining_next selected -- only a loose 5-tile check against the original
+      command's (x,y), not the same tile once the queue advanced. Native mining_state
+      silently does nothing at a genuine multi-tile distance even with `selected` correctly
+      set. Reproduced live twice on different maps: harvested stuck at exactly 0,
+      mining_state.mining staying true, game.tick advancing normally, for many real minutes.
+      The same adjacency check (MINE_ADJACENT_RANGE) already existed in the sibling
+      tick_gather_queues (0.16.15) but was never backported here. Fixed: skip an
+      out-of-adjacency current entity to the next candidate, plus a 600-tick stale-progress
+      backstop.
+    - belt_connect's A* (pathfind.lua): with a Manhattan heuristic and 4-directional
+      movement, every tile inside the from/to bounding rectangle shares the same f-score,
+      and the old tie-break (keep whichever equal-f node was found first) made the search
+      fan out breadth-first across nearly the entire rectangle instead of marching toward
+      the goal -- long routes reliably exhausted the 2500-node cap even on open terrain.
+      Fixed the tie-break to prefer the larger-g (closer to goal) node among ties (verified
+      this cannot make the result suboptimal). Also raised MAX_SEARCH_MARGIN 15->40 for
+      longer detours around obstacles (lakes).
+---------------------------------------------------------------------------------------------------
+Version: 0.16.24
+Date: 2026-07-05
+  Bugfixes (external automated review, "cubic dev ai bot"):
+    - q.clearing_target (opportunistic obstacle clearing) was only cleared when the
+      referenced entity became invalid (fully mined/destroyed) -- never when the companion
+      simply walked away from it (redirected to a new target, or follow_player moved
+      elsewhere). Since all new-target acquisition is gated on this field, a still-valid but
+      now-distant target could permanently block the companion from noticing any new,
+      genuinely nearby obstacle for as long as that walking_queue entry lives. Fixed with a
+      distance guard (>6 tiles) that clears the stale reference once the companion has
+      clearly moved on.
+---------------------------------------------------------------------------------------------------
+Version: 0.16.23
+Date: 2026-07-05
+  Bugfixes:
+    - Opportunistic obstacle clearing matched type='simple-entity' for rocks, which is much
+      broader than the 3 rock names actually intended -- it also matches unrelated Space Age
+      content on other planets (Vulcanus volcanic-rock/stromatolite, Fulgora rock/ruins,
+      lithium-iceberg, etc.). Tightened to an explicit named list
+      (big-rock/big-sand-rock/huge-rock).
+---------------------------------------------------------------------------------------------------
+Version: 0.16.22
+Date: 2026-07-05
+  Bugfixes:
+    - Opportunistic obstacle clearing only handled trees, not rocks, and used a one-shot
+      mine call instead of the native sustained mining_state used everywhere else. Fixed to
+      also clear rocks and use the same native-mining pattern.
+---------------------------------------------------------------------------------------------------
+Version: 0.16.21
+Date: 2026-07-05
+  Features:
+    - Extended the free in-flight-queue-status attachment (0.16.20) to 5 more status
+      endpoints (fac_gather_status, fac_fuel_group_status, fac_building_place_status,
+      fac_belt_connect_status, fac_item_craft_status, fac_action_attack_status).
+---------------------------------------------------------------------------------------------------
+Version: 0.16.20
+Date: 2026-07-05
+  Features:
+    - RCON is request/response only, a mod can never push a message on its own -- but the
+      response to whatever command Python happens to send next can now carry the completion
+      status of OTHER in-flight async jobs for free. New companion_queue_status(cid)
+      summarizes which of the 8 per-companion queues currently have an entry for this
+      companion; wired into fac_companion_position and fac_resource_mine_status (the two
+      endpoints Python's blocking-poll loops already call every 1-2s).
+---------------------------------------------------------------------------------------------------
+Version: 0.16.18
+Date: 2026-07-04
+  Bugfixes:
+    - tick_belt_queues's new approach-deadline guard (0.16.17) used (q.approach_deadline or 0),
+      which would instant-fail a belt_queues entry persisted by an older mod version (Factorio's
+      storage table survives save/reload) that predates this field, even while still genuinely
+      walking. Now heals a missing deadline by seeding a fresh one instead.
+---------------------------------------------------------------------------------------------------
+Version: 0.16.17
+Date: 2026-07-04
+  Bugfixes (external automated review, "cubic dev ai bot" -- all 4 confirmed valid, fixed,
+  live re-verified via test_belt_connect.py + test_inserter_set_filter.py):
+    - pathfind.lua's belt-corridor A* keyed its visited/gscore/came_from bookkeeping by tile
+      position alone, but edge cost depends on arrival direction (turn-penalty) -- a
+      direction-dependent cost with a position-only state key can permanently prune a later,
+      better-oriented (lower true-cost) path reaching the same tile, breaking A*'s optimality.
+      Fixed by keying search state on (x,y,direction) instead.
+    - fac_inserter_set_filter (building.lua) picked find_entities_filtered's first result
+      instead of the nearest inserter to the target coordinates -- could silently configure
+      the wrong inserter when several are packed in a tight row. Fixed to pick nearest by
+      distance (same convention as fac_building_empty/_fill). Found + fixed the identical bug
+      in fac_building_rotate while here.
+    - queues.lua's underground-belt distance check used dist<=4 ("UNDERGROUND_MAX_GAP"), but
+      the engine's own prototype data (transport-belts.lua) confirms max_distance=5 for the
+      yellow tier (entrance-to-exit span, 4 tiles of actual gap) -- the check incorrectly
+      rejected the legitimate maximum-range placement. Fixed to dist<=5.
+    - tick_belt_queues (queues.lua) had no approach-deadline guard, unlike its sibling
+      tick_gather_queues/tick_fuel_queues -- a permanently unreachable belt tile could hang
+      get_belt_connect_status forever. Fixed with the same distance-scaled deadline formula.
+---------------------------------------------------------------------------------------------------
+Version: 0.16.15
+Date: 2026-07-04
+  Bugfixes:
+    - fac_gather's "approach" state blacklisted only the ONE unreachable ore tile it tried, not the
+      whole patch. An entirely unreachable patch (e.g. coal across water from a distant power-plant
+      shore) is typically dozens of adjacent 1-tile entities at nearly identical distance, so "find"
+      immediately re-picked the NEXT tile of the SAME dead patch -- exhausting a large patch needed
+      O(patch size) deadline cycles and could burn the entire 180s Python-side gather() timeout with
+      zero gathered (live-caught: coal gather near a far shore stuck in "approach" for the full 180s).
+      Now blacklists every tile of the resource within patch range (radius=15) once one proves
+      unreachable, live-verified: same test that previously stalled now reaches 10/10 science packs
+      with no gather timeout.
+---------------------------------------------------------------------------------------------------
+Version: 0.16.5
+Date: 2026-07-03
+  Bugfixes:
+    - fac_fuel_group could feed only the NEAREST burner and starve every other one: with less coal
+      than needed to fully top every burner, the greedy nearest-first fill drained the whole supply
+      on burner #1 before the "out of coal" check even let burner #2 be tried. Now round-robin: every
+      reachable burner gets a turn (tracked in a per-round `served` set) before any one gets a SECOND
+      visit, so a scarce supply is actually split across all of them instead of hoarded by whichever
+      is closest.
+    - fac_fuel_group_status and fac_building_place_status could report a stale/empty result (e.g.
+      "fueled:0, machines:0" even though real coal WAS delivered) if the whole job finished inside a
+      single poll interval: the queue entry was deleted the instant it finished, so the NEXT poll saw
+      plain "active:false" with no numbers. The terminal outcome (success/failure/counts) now survives
+      until a status poll actually reads and consumes it.
+    - fac_building_place_status (used by every place_smart call project-wide) replied
+      {"id":.., "status": {...}} but the Python client read fields off the OUTER object instead of
+      the nested "status" -- "active" was always undefined/false, so place_smart declared a build
+      "placed" after its very FIRST poll (~1s in), long before the companion had even reached the
+      site. The building was frequently never actually created. This affected every async placement
+      in the whole project's history (furnaces, drills, power plant, lab, assembler lines, ...).
+    - Spectator camera (fac_spectate) re-teleported the viewing player to the companion's exact
+      position every tick -- 60 discrete snaps/sec with no interpolation, which read as visible
+      jitter/stutter. Now uses LuaPlayer.centered_on (engine-interpolated smooth follow), set once
+      and only re-asserted if it changes.
+---------------------------------------------------------------------------------------------------
+Version: 0.16.4
+Date: 2026-07-02
+  Features:
+    - fac_fuel_group <id> [per] [radius] (+ fac_fuel_group_status): the companion now tops up EVERY
+      burner (furnace/boiler/burner-inserter/burner-drill) within range fully on its own -- walks to
+      each nearest-first and inserts coal from its OWN inventory (native insert, real coal consumed).
+      Replaces the external go_to + fuel loop over a hardcoded machine-position list.
+  Bugfixes:
+    - fac_gather could hang its full timeout mining 0 units when the nearest patch of a resource was
+      STANDABLE but not actually PATH-REACHABLE (e.g. across water/cliffs) -- the companion would walk
+      toward it forever without arriving. Added a distance-scaled approach deadline: an unreachable
+      patch is now blacklisted and the next-nearest patch tried instead, so gather always terminates
+      productively instead of stalling for the full timeout.
+---------------------------------------------------------------------------------------------------
+Version: 0.16.3
+Date: 2026-07-01
+  Features:
+    - fac_gather <id> <resource> <count> (+ fac_gather_status): the companion now gathers a resource
+      fully on its own -- find the nearest REACHABLE + SAFE patch, walk there, and mine it to the
+      target with native 1-unit mining, hopping to the next patch as tiles deplete. A new gather_queue
+      state machine (find -> approach -> mine), all server-side. Replaces the external find_nearest +
+      go_to + start_harvest + poll orchestration (start of moving control glue into the mod).
+---------------------------------------------------------------------------------------------------
+Version: 0.16.2
+Date: 2026-07-01
+  Bugfixes:
+    - Mining no longer cheats. The resource harvest (queues.lua start_mining_next) used to take a
+      single lump and then entity.destroy the WHOLE ore tile (up to thousands of units) -- nuking
+      deposits and wasting everything but the one lump. It now uses native entity.mine{inventory=...}:
+      exactly ONE unit into the companion inventory, the tile's amount decrements by one, and the game
+      removes the tile only when it is fully mined out. The character MINES, it never destroys.
+    - fac_mine_entity (trees/rocks/buildings) likewise switched to native entity.mine{}: wood from
+      trees, stone from rocks, the building's item + contents into the inventory. If the inventory is
+      full the entity is LEFT INTACT (no silent item loss, no destroy-without-return).
+  Features:
+    - fac_spectate <player> <companion> and fac_spectate_stop <player>: put a connected player into the
+      native spectator controller and auto-follow a companion's camera every tick (server-side, no
+      external teleport loop). Lets a human watch the AI play without a character and without interfering.
+---------------------------------------------------------------------------------------------------
+Version: 0.15.0
+Date: 2026-06-30
+  Features:
+    - Death reporting: a companion whose character entity is gone (e.g. killed by biters) is
+      tracked as DEAD (storage.dead_companions); EVERY command now reports
+      "companion #N is dead" instead of the vague "Companion not found", so the orchestrator /
+      recorder can discard or respawn immediately instead of driving a corpse.
+    - fac_move_to: enemy-base protection -- refuses a destination within 16 tiles of a
+      unit-spawner so the companion never walks into a nest and provokes biters.
+    - fac_companion_spawn clears the dead flag on (re)spawn.
+---------------------------------------------------------------------------------------------------
+Version: 0.14.5
+Date: 2026-06-29
+  Bugfixes (PR #2 cubic review):
+    - fac_mine_entity: pick the NEAREST entity (not first in radius); respect insert return
+      values (no item loss when companion inventory full); honor product amount_min/probability.
+    - fac_building_info: exclude the companion and player characters from results.
+    - fac_companion_spawn: headless fallback uses force.get_spawn_position (not hardcoded {0,0}).
+    - control.lua: path_pending now times out (600 ticks) so a missed path-finished event
+      (e.g. across save/load) no longer permanently disables pathfinding.
+    - control.lua: stuck-path clearing spares rocks (yield stone) -- only clears trees / non-rock
+      obstacles, avoiding silent resource loss.
+---------------------------------------------------------------------------------------------------
+Version: 0.14.4
+Date: 2026-06-29
+  Bugfixes:
+    - fac_building_place: clear obstacles ONLY when placement is actually blocked (was
+      destroying trees/rocks even when placement would fail anyway for other reasons).
+    - fac_building_place: pick up lying items by inserting the real LuaItemStack (preserves
+      quality/count) and only destroy the ground item if it was fully collected (no item loss).
+---------------------------------------------------------------------------------------------------
+Version: 0.14.3
+Date: 2026-06-29
+  Features:
+    - fac_building_place now autonomously CLEARS the build site before placing: trees,
+      rocks (simple-entity), and lying items (item-entity, collected into inventory).
+    - If the companion stands on the build footprint it steps aside (find_non_colliding_position)
+      so it no longer blocks its own placement. Only a genuine post-clear failure returns "Cannot place".
+---------------------------------------------------------------------------------------------------
+Version: 0.14.1
+Date: 2026-06-26
+  Bugfixes:
+    - fac_companion_spawn no longer requires a connected player: spawns near a
+      player if one exists, else at the map spawn/origin via
+      find_non_colliding_position. Enables companion control on a HEADLESS
+      server (no client connected) - required for autonomous RL training.
+---------------------------------------------------------------------------------------------------
+Version: 0.14.0
+Date: 2026-06-26
+  Changes:
+    - Factorio 2.1 compatibility (factorio_version 2.1, verified on 2.1.8)
+  Features:
+    - Autonomous build pipeline: fac_building_place_start approaches a safe
+      position near the target, clears trees/rocks at the footprint, then
+      places - no external pathfinding needed
+    - fac_building_place auto-clears trees/rocks before placing
+  Bugfixes:
+    - Fixed scheduler crash: SOLID_TYPES contained invalid prototype types
+      ('chest', 'steam-engine') so find_entities_filtered raised inside the
+      unguarded on_nth_tick handler, killing ALL companion queues on any
+      build attempt. Use valid types (generator, container, ...)
+    - Wrapped every tick subsystem in pcall so one failure can no longer stop
+      the whole scheduler
+    - Restored stuck-detection + perpendicular obstacle-bypass walking
+---------------------------------------------------------------------------------------------------
 Version: 0.13.3
 Date: 2025-01-17
   Features:

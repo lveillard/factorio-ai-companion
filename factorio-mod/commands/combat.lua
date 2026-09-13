@@ -7,7 +7,7 @@ commands.add_command("fac_world_enemies", nil, function(cmd)
   u.safe_command(function()
     local args = u.parse_args("^(%S+)%s*(%d*)$", cmd.parameter)
     local id, c = u.find_companion(args[1])
-    if not id then u.error_response("Companion not found"); return end
+    if not id then u.not_found(); return end
     local radius = tonumber(args[2]) or 30
 
     local enemies = c.entity.surface.find_entities_filtered{
@@ -47,7 +47,7 @@ commands.add_command("fac_action_attack_start", nil, function(cmd)
   u.safe_command(function()
     local args = u.parse_args("^(%S+)%s+(%-?%d+%.?%d*)%s+(%-?%d+%.?%d*)$", cmd.parameter)
     local id, c = u.find_companion(args[1])
-    if not id then u.error_response("Companion not found"); return end
+    if not id then u.not_found(); return end
     local x, y = tonumber(args[2]), tonumber(args[3])
     local result = queues.start_combat(id, {x = x, y = y})
     result.id = id
@@ -60,9 +60,10 @@ commands.add_command("fac_action_attack_status", nil, function(cmd)
   u.safe_command(function()
     local args = u.parse_args("^(%S+)$", cmd.parameter)
     local id = u.find_companion(args[1])
-    if not id then u.error_response("Companion not found"); return end
+    if not id then u.not_found(); return end
     local status = queues.get_combat_status(id)
-    u.json_response({id = id, status = status})
+    -- id passed as 2nd arg (2026-07-05): free queue-status attachment, see init.lua.
+    u.json_response({id = id, status = status}, id)
   end)
 end)
 
@@ -71,7 +72,7 @@ commands.add_command("fac_action_attack_stop", nil, function(cmd)
   u.safe_command(function()
     local args = u.parse_args("^(%S+)$", cmd.parameter)
     local id = u.find_companion(args[1])
-    if not id then u.error_response("Companion not found"); return end
+    if not id then u.not_found(); return end
     local result = queues.stop_combat(id)
     u.json_response({id = id, stopped = result.stopped, kills = result.kills or 0})
   end)
@@ -82,7 +83,7 @@ commands.add_command("fac_action_defend", nil, function(cmd)
   u.safe_command(function()
     local args = u.parse_args("^(%S+)%s+(%S+)$", cmd.parameter)
     local id, c = u.find_companion(args[1])
-    if not id then u.error_response("Companion not found"); return end
+    if not id then u.not_found(); return end
     local mode = args[2]:lower()
     if mode == "on" or mode == "true" or mode == "1" then
       c.auto_defend = true

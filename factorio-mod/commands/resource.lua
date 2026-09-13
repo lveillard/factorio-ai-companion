@@ -8,7 +8,7 @@ commands.add_command("fac_resource_list", nil, function(cmd)
   u.safe_command(function()
     local args = u.parse_args("^(%S+)%s*(%S*)%s*(%d*)$", cmd.parameter)
     local id, c = u.find_companion(args[1])
-    if not id then u.error_response("Companion not found"); return end
+    if not id then u.not_found(); return end
     local filter = args[2] ~= "" and args[2] or nil
     local radius = tonumber(args[3]) or 50
     local pos = c.entity.position
@@ -31,7 +31,7 @@ commands.add_command("fac_resource_mine", nil, function(cmd)
   u.safe_command(function()
     local args = u.parse_args("^(%S+)%s+(%-?%d+%.?%d*)%s+(%-?%d+%.?%d*)%s*(%d*)%s*(%S*)$", cmd.parameter)
     local id, c = u.find_companion(args[1])
-    if not id then u.error_response("Companion not found"); return end
+    if not id then u.not_found(); return end
     local x, y, count = tonumber(args[2]), tonumber(args[3]), tonumber(args[4]) or 1
     local resource_name = args[5] ~= "" and args[5] or nil
     -- Normalize common resource names
@@ -56,9 +56,12 @@ commands.add_command("fac_resource_mine_status", nil, function(cmd)
   u.safe_command(function()
     local args = u.parse_args("^(%S+)$", cmd.parameter)
     local id = u.find_companion(args[1])
-    if not id then u.error_response("Companion not found"); return end
+    if not id then u.not_found(); return end
     local status = queues.get_harvest_status(id)
-    u.json_response({id = id, status = status})
+    -- `id` passed as 2nd arg (2026-07-05): same free-status-attachment as
+    -- fac_companion_position -- wait_mine()'s existing poll now also surfaces any OTHER
+    -- in-flight job for this companion (e.g. a build queued right after mining started).
+    u.json_response({id = id, status = status}, id)
   end)
 end)
 
@@ -67,9 +70,92 @@ commands.add_command("fac_resource_mine_stop", nil, function(cmd)
   u.safe_command(function()
     local args = u.parse_args("^(%S+)$", cmd.parameter)
     local id = u.find_companion(args[1])
-    if not id then u.error_response("Companion not found"); return end
+    if not id then u.not_found(); return end
     local result = queues.stop_harvest(id)
     u.json_response({id = id, stopped = result.stopped, harvested = result.harvested or 0})
+  end)
+end)
+
+-- AUTONOMOUS gather: the mod itself finds the nearest REACHABLE + SAFE patch, walks the companion
+-- there, and mines to `count` (native 1-unit mining), moving to the next patch as tiles deplete.
+-- Replaces the Python find_nearest + go_to + start_harvest + poll glue -- "what the mod can do itself".
+-- Usage: /fac_gather <id> <resource> <count> [exclude]  ; poll /fac_gather_status <id>
+-- exclude (2026-07-07, optional 4th arg): "x1:y1,x2:y2,..." -- positions the CALLER already
+-- knows are unreachable/exhausted (e.g. spatial_bc.py's persistent per-resource
+-- resource_exclude, accumulated across the whole episode) -- skipped from the very first
+-- patch search instead of being silently re-discovered.
+commands.add_command("fac_gather", nil, function(cmd)
+  u.safe_command(function()
+    local args = u.parse_args("^(%S+)%s+(%S+)%s+(%d+)%s*(%S*)$", cmd.parameter)
+    local id, c = u.find_companion(args[1])
+    if not id then u.not_found(); return end
+    local resource = args[2] and (normalize[args[2]] or args[2]) or nil
+    local count = tonumber(args[3])
+    if not resource or not count then u.error_response("Usage: fac_gather <id> <resource> <count> [exclude]"); return end
+    local exclude = nil
+    if args[4] and args[4] ~= "" then
+      exclude = {}
+      for pair in args[4]:gmatch("[^,]+") do
+        local ex, ey = pair:match("^(%-?%d+):(%-?%d+)$")
+        if ex and ey then exclude[#exclude + 1] = {x = tonumber(ex), y = tonumber(ey)} end
+      end
+    end
+    local result = queues.start_gather(id, resource, count, exclude)
+    if result.error then u.json_response({id = id, error = result.error})
+    else u.json_response({id = id, gathering = true, resource = resource, target = count}) end
+  end)
+end)
+
+commands.add_command("fac_gather_status", nil, function(cmd)
+  u.safe_command(function()
+    local args = u.parse_args("^(%S+)$", cmd.parameter)
+    local id = u.find_companion(args[1])
+    if not id then u.not_found(); return end
+    -- id passed as 2nd arg (2026-07-05): free queue-status attachment, see init.lua.
+    u.json_response({id = id, status = queues.get_gather_status(id)}, id)
+  end)
+end)
+
+-- FAC_FUEL_GROUP: autonomous "walk to each burner in range and top up its fuel" composite.
+-- Replaces the Python go_to + fuel + poll loop over a hardcoded machine list ("what the mod can do
+-- itself"). Consumes REAL coal from the companion inventory (native insert, no cheat).
+-- Usage: /fac_fuel_group <id> [per] [radius]  ; poll /fac_fuel_group_status <id>
+commands.add_command("fac_fuel_group", nil, function(cmd)
+  u.safe_command(function()
+    local args = u.parse_args("^(%S+)%s*(%d*)%s*(%d*)$", cmd.parameter)
+    local id, c = u.find_companion(args[1])
+    if not id then u.not_found(); return end
+    local per = tonumber(args[2]) or 20
+    local radius = tonumber(args[3]) or 200
+    local result = queues.start_fuel_group(id, per, radius)
+    if result.error then u.json_response({id = id, error = result.error})
+    else u.json_response({id = id, fueling = true, per = per, radius = radius}) end
+  end)
+end)
+
+commands.add_command("fac_fuel_group_status", nil, function(cmd)
+  u.safe_command(function()
+    local args = u.parse_args("^(%S+)$", cmd.parameter)
+    local id = u.find_companion(args[1])
+    if not id then u.not_found(); return end
+    -- id passed as 2nd arg (2026-07-05): free queue-status attachment, see init.lua.
+    u.json_response({id = id, status = queues.get_fuel_status(id)}, id)
+  end)
+end)
+
+-- DIAGNOSTIC (2026-07-11, Mode A/B gather-select-fail investigation -- see queues.lua's
+-- MINE_DIAG_CAP comment for the full mechanism/scope and current findings). Returns the
+-- per-cycle "approach" (walking) + "mine" state trace recorded since the companion last
+-- started walking toward a candidate resource tile (extended same day to also cover the
+-- walking phase, see queues.lua's EXTENSION comment). Kept deliberately (not removed) --
+-- the investigation is still open and will likely need this again; see queues.lua's
+-- comment before removing.
+commands.add_command("fac_mine_diag", nil, function(cmd)
+  u.safe_command(function()
+    local args = u.parse_args("^(%S+)$", cmd.parameter)
+    local id = u.find_companion(args[1])
+    if not id then u.not_found(); return end
+    u.json_response({id = id, samples = queues.get_mine_diag(id)})
   end)
 end)
 
@@ -77,7 +163,7 @@ commands.add_command("fac_resource_nearest", nil, function(cmd)
   u.safe_command(function()
     local args = u.parse_args("^(%S+)%s+(%S+)$", cmd.parameter)
     local id, c = u.find_companion(args[1])
-    if not id then u.error_response("Companion not found"); return end
+    if not id then u.not_found(); return end
     local name = normalize[args[2]] or args[2]
     local pos = c.entity.position
     local area = {{pos.x - 200, pos.y - 200}, {pos.x + 200, pos.y + 200}}

@@ -1,0 +1,69 @@
+#!/bin/bash
+# Post-commit hook (TRACKED in the repo, same core.hooksPath wiring as pre-commit).
+#
+# Zdendys (2026-07-06): "a tool that will save new mod versions to the web as soon
+# as they're created, and delete the old ones" -- whenever a commit touches factorio-mod/ (which means
+# pre-commit already bumped info.json's version as part of THIS commit), repackage
+# and republish to the website sync folder automatically, no manual step to remember.
+#
+# Does not use `set -e`: a post-commit hook cannot undo the commit that already
+# happened, so a failure here must be visible (non-zero exit still prints to the
+# terminal) without ever appearing to have blocked or reverted anything.
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# HEAD~1 may not exist on the very first commit -- fall back to the empty tree so the
+# diff still runs (and, on a repo's first commit, correctly treats every mod file as
+# "changed").
+if git rev-parse --verify -q HEAD~1 >/dev/null; then
+  prev=HEAD~1
+else
+  prev=$(git hash-object -t tree /dev/null)
+fi
+
+changed=$(git diff --name-only "$prev" HEAD -- factorio-mod/ || true)
+if [ -n "$changed" ]; then
+  echo "[post-commit] factorio-mod/ changed -- publishing to web ..."
+  if ! "$repo_dir/scripts/publish_mod_to_web.sh"; then
+    echo "[post-commit] WARNING: publish_mod_to_web.sh failed -- mod web copy may be" \
+         "stale, republish manually: $repo_dir/scripts/publish_mod_to_web.sh" >&2
+  fi
+  # deploy_mod_to_local.sh (2026-07-29, ep135 discard investigation -- see that
+  # script's own header comment for the full incident): the web publish above
+  # NEVER updated ~/.factorio/mods/ai-companion, the directory the LOCAL running
+  # Factorio server actually loads its mod from -- confirmed live to have sat 2
+  # versions stale (0.16.128 vs repo's 0.16.130), silently neutering the last two
+  # mod-side fixes of this same overnight session despite both passing their own
+  # luac -p + live-RCON-smoke-test verification (which only proves the mod loads
+  # without crashing, never that the NEW code is what's actually running).
+  echo "[post-commit] factorio-mod/ changed -- mirroring to local Factorio mods dir ..."
+  if ! "$repo_dir/scripts/deploy_mod_to_local.sh"; then
+    echo "[post-commit] WARNING: deploy_mod_to_local.sh failed -- the LOCAL running" \
+         "game may still be on a stale mod version, redeploy manually:" \
+         "$repo_dir/scripts/deploy_mod_to_local.sh" >&2
+  fi
+fi
+
+# --- Auto-push after every commit -------------------------------------------
+# Zdendys, 2026-09-12, after finding 38 commits sitting local-only for weeks
+# (the "publish to web" step above ran every time, but nothing ever pushed to
+# origin): "Ah bože!!! Tak si to nastav jako automatické a dělej to tak! -
+# PAMTUJ SI TO!" Commit and push must never again be two separate steps that a
+# session can get interrupted between. A push failure (offline, auth,
+# diverged remote) is reported loudly but never treated as fatal -- the
+# commit already happened and must stand regardless of network state.
+set +e
+branch="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$branch" = "HEAD" ]; then
+  echo "[post-commit] Detached HEAD -- skipping auto-push."
+else
+  push_output="$(git push origin "$branch" 2>&1)"
+  push_status=$?
+  echo "$push_output" | sed 's/^/[auto-push] /'
+  if [ "$push_status" -ne 0 ]; then
+    echo "[post-commit] WARNING: auto-push to origin/$branch failed (exit $push_status) -- commit is LOCAL ONLY, push manually: git push origin $branch" >&2
+  fi
+fi
+set -e
+# ------------------------------------------------------------------------------
+
+exit 0

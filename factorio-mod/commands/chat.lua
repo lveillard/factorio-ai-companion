@@ -31,7 +31,7 @@ commands.add_command("fac_chat_say", nil, function(cmd)
       u.json_response({id = 0, name = "Claude", said = msg}); return
     end
     local id, c = u.find_companion(id_str)
-    if not id then u.error_response("Companion not found"); return end
+    if not id then u.not_found(); return end
     game.print("[" .. u.get_companion_display(id) .. "] " .. msg, u.print_color(c.color or u.get_companion_color(id)))
     u.json_response({id = id, name = c.name, said = msg})
   end)

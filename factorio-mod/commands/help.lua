@@ -8,6 +8,13 @@ commands.add_command("fac_version", nil, function()
   game.print("[AI Companion] v" .. version, u.print_color(u.COLORS.system))
 end)
 
+-- Surfaces the storage.errors ring buffer (populated by u.error_response on every
+-- pcall-caught command failure, capped at 50 entries) so a Python caller can inspect
+-- what silently failed instead of it just accumulating unread ([[feedback_log_every_silent_failure]]).
+commands.add_command("fac_get_errors", nil, function()
+  u.json_response({errors = storage.errors or {}})
+end)
+
 commands.add_command("fac_help", nil, function()
   local version = script.active_mods["ai-companion"] or "unknown"
   u.json_response({

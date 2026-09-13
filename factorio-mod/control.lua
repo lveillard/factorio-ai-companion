@@ -1,19 +1,90 @@
 -- AI Companion - Factorio 2.x
 local u = require("commands.init")
 local queues = require("commands.queues")
+local spectate = require("commands.spectate")
+local task_pool = require("commands.task_pool")
 
 -- Get version dynamically from mod info
 local MOD_VERSION = script.active_mods["ai-companion"] or "unknown"
 
+-- Decorative rocks worth opportunistically clearing (2026-07-05, Zdendys's exhaustive
+-- list: "All the rock types being searched for are: Big rock, big sandy rock: 120
+-- tick / Huge rock: 180tick"). Named explicitly rather than matching the broader type='simple-entity'
+-- prototype category: that type ALSO covers a lot of other-planet Space Age content
+-- (Vulcanus volcanic-rock/stromatolite/demolisher-corpse, Fulgora rock/ruins,
+-- lithium-iceberg, etc. -- confirmed live via prototypes.entity, 2026-07-05) that must
+-- NOT be swept up by a home-planet obstacle-clearing rule if the companion ever operates
+-- elsewhere. Trees, by contrast, ARE matched by the generic type='tree' prototype
+-- category everywhere below -- confirmed live that this correctly covers every variant
+-- Zdendys listed (tree-01/02/07/08/09 and color variants, dry-tree, dead-grey-trunk,
+-- dead-tree-desert, dead-dry-hairy-tree, dry-hairy-tree), so no equivalent name list is
+-- needed for trees.
+local CLEARABLE_ROCK_NAMES = {"big-rock", "big-sand-rock", "huge-rock"}
+
+-- WALK_TARGET_WALKABLE_RADIUS (2026-07-24, Zdendys: confirmed real gap -- fac_move_to/
+-- go_to() never validated or offset an unwalkable target (water, under a building) --
+-- see process_walking_queues' own "TARGET-WALKABILITY FIX" comment below for the full
+-- fix. A modest search radius: wide enough to rescue a target that's genuinely just a
+-- tile or two into water/a building footprint, not so wide that a badly-chosen target
+-- silently teleports the intended destination somewhere far away and unexpected.
+local WALK_TARGET_WALKABLE_RADIUS = 3
+
+-- WAYPOINT_STALL_REPATH_TICKS (2026-07-25, Zdendys: 2nd of 3 confirmed walking-
+-- obstacle gaps -- see process_walking_queues' own "RE-PATH AFTER PROLONGED
+-- WAYPOINT STALL" comment below for the full fix/derivation). 150 ticks (~2.5
+-- real seconds at normal game speed) is comfortably longer than a single
+-- bypass round (10 bypass_ticks x 5-tick sample interval = 50 ticks) -- long
+-- enough that the perpendicular bypass genuinely gets a real chance to work
+-- first, short enough that a persistently-blocked companion escalates to a
+-- full re-path within a few real seconds, not tens of seconds.
+local WAYPOINT_STALL_REPATH_TICKS = 150
+
 local function init_storage()
   storage.companion_messages = storage.companion_messages or {}
   storage.companions = storage.companions or {}
+  storage.dead_companions = storage.dead_companions or {}
   storage.companion_next_id = storage.companion_next_id or 1
   storage.walking_queues = storage.walking_queues or {}
   storage.context_clear_requests = storage.context_clear_requests or {}
   storage.errors = storage.errors or {}
   storage.companion_markers = storage.companion_markers or {}
+  storage.path_requests = storage.path_requests or {}
+  -- walk_last_outcome (2026-07-16, Zdendys's fast-giveup directive): one-shot,
+  -- consume-once stash of how a fac_move_to()-driven walk ended when
+  -- process_walking_queues gives up on it early (see that function's own
+  -- giveup_enabled block) -- "approx_arrived" (close enough, <4 tiles, good enough
+  -- for most construction per Zdendys) or "unreachable" (still >=4 tiles away).
+  -- Read-and-cleared by fac_companion_position's handler (commands/companion.lua)
+  -- the same way companion_queue_status already surfaces other async state, so
+  -- companion.py's wait_arrive() sees this for FREE on its own already-happening
+  -- position poll -- no new RCON round-trip.
+  storage.walk_last_outcome = storage.walk_last_outcome or {}
+  -- walk_last_arrived (2026-07-26, Zdendys's direct request to stop deferring the
+  -- narrow-gap/bootstrap-furnace stall and actually fix it -- see
+  -- rare_coal_pair_narrow_gap_stall_2026_07_25.md for the full investigation this
+  -- closes): process_walking_queues' own "dist < 2" arrival check (below) clears
+  -- storage.walking_queues[cid] the instant it's satisfied, with NO trace left
+  -- behind of what q.target actually was. companion.lua's fac_companion_position
+  -- exposes q.target as "walk_target" so companion.py's wait_arrive() can accept
+  -- arrival relative to a walkability-CORRECTED target, not just the caller's raw
+  -- (possibly-inside-a-building's-footprint) one -- but that only works while the
+  -- queue still exists. If the mod's own tighter <2 threshold is satisfied before
+  -- Python's next poll (a real race: this function runs every tick, Python polls
+  -- every 50ms = many ticks at game.speed>1), Python's poll sees walking_queues[id]
+  -- already nil, walk_target comes back nil too, and it permanently loses the
+  -- corrected point -- stuck comparing only the raw target forever, even though
+  -- the companion is already standing within 2 tiles of a DIFFERENT (corrected)
+  -- point and will never walk any closer. Confirmed live via the new mid-wait
+  -- walk_state sampling (companion.py, same session): active:false from the very
+  -- first sample of an affected wait, proving the queue was gone from the start,
+  -- not cleared partway through. This one-shot-per-arrival (but NOT consumed --
+  -- see the read side, commands/companion.lua -- deliberately left readable across
+  -- multiple polls, unlike walk_last_outcome, since it's not a failure notification
+  -- that could be misread as fresh) stash closes the race: Python can now recover
+  -- the corrected target even after the queue is gone.
+  storage.walk_last_arrived = storage.walk_last_arrived or {}
   queues.init()
+  task_pool.init()
 end
 
 local function cleanup_messages()
@@ -133,9 +204,11 @@ require("commands.chat")
 require("commands.companion")
 require("commands.context")
 require("commands.item")
+require("commands.mapgen")
 require("commands.move")
 require("commands.research")
 require("commands.resource")
+require("commands.task")
 require("commands.world")
 require("commands.combat")
 require("commands.help")
@@ -169,16 +242,123 @@ local function update_companion_markers()
   end
 end
 
-script.on_nth_tick(5, function(ev)
-  if ev.tick % 1800 == 0 then cleanup_messages() end
-  -- Update map markers every 30 ticks (0.5 sec)
-  if ev.tick % 30 == 0 then update_companion_markers() end
-  -- Process all tick-based queues (realistic actions)
-  queues.tick_harvest_queues()
-  queues.tick_craft_queues()
-  queues.tick_build_queues()
-  queues.tick_combat_queues()
-  -- Process walking queues
+-- Run one tick subsystem defensively: a runtime error (e.g. an invalid
+-- prototype-type filter) must NEVER propagate out of on_nth_tick, or it would
+-- crash the whole scheduler / the game. Errors are recorded and printed
+-- throttled (once per ~5s) instead.
+local function guard_tick(name, fn, tick)
+  local ok, err = pcall(fn)
+  if not ok then
+    -- 2026-07-11: was storage.errors[name] = {...} -- a STRING key into the SAME table
+    -- init.lua's u.log_error appends to via table.insert (numeric/array keys). Mixing
+    -- string and numeric keys in one Lua table makes helpers.table_to_json emit a JSON
+    -- OBJECT instead of an array, so /fac_get_errors could come back as a dict (keys like
+    -- "1", "harvest") instead of the list every caller expects, crashing any code that
+    -- calls .get() on an entry expecting {context,error,tick}. Also silently overwrote
+    -- the previous error for the same handler name instead of accumulating history.
+    -- Route through the shared u.log_error so this uses the SAME array-style ring buffer
+    -- (with its own 50-entry cap) as every other error site in the mod.
+    u.log_error(tostring(err), name)
+    if tick % 300 == 0 then
+      game.print("[AI Companion] " .. name .. " tick error: " .. tostring(err),
+        u.print_color(u.COLORS.error))
+    end
+  end
+end
+
+-- Trees matched by the generic type='tree' prototype category (covers every variant,
+-- confirmed live 2026-07-05 -- see CLEARABLE_ROCK_NAMES comment above for why rocks are
+-- NOT matched this same broad way) + the exact named rocks worth clearing. Two separate
+-- find_entities_filtered calls (Factorio's filter ANDs type/name together within one
+-- call, it can't OR a type against a name list) merged into one result list.
+local function find_clearable_obstacles(surf, pos, radius)
+  local trees = surf.find_entities_filtered{position = pos, radius = radius, type = "tree"}
+  local rocks = surf.find_entities_filtered{position = pos, radius = radius, name = CLEARABLE_ROCK_NAMES}
+  local out = {}
+  for _, e in ipairs(trees) do out[#out + 1] = e end
+  for _, e in ipairs(rocks) do out[#out + 1] = e end
+  return out
+end
+
+-- Ask the game pathfinder for a route to q.target that goes AROUND large obstacles
+-- (water, cliffs) -- the straight-line + perpendicular bypass only clears small
+-- stuff (trees/rocks) and cannot navigate around a lake. Result arrives async via
+-- on_script_path_request_finished and is stored as q.path (list of waypoints).
+local function request_walk_path(cid, q, e)
+  local proto = prototypes.entity["character"]
+  local ok, id = pcall(function()
+    return e.surface.request_path{
+      bounding_box = proto.collision_box,
+      collision_mask = proto.collision_mask,
+      start = e.position,
+      goal = q.target,
+      force = e.force,
+      radius = 2,
+      can_open_gates = true,
+      -- CRITICAL: ignore the companion itself, otherwise its own collision box makes
+      -- the START position collide -> pathfinder returns nil (no path) every time.
+      entity_to_ignore = e,
+      pathfind_flags = {cache = false, low_priority = false},
+    }
+  end)
+  if ok and id then
+    storage.path_requests[id] = cid
+    q.path_pending = true
+    q.path_req_tick = game.tick
+  else
+    -- API/call failed -> fall back to straight-line; retry later
+    q.path_failed_tick = game.tick
+  end
+end
+
+script.on_event(defines.events.on_script_path_request_finished, function(ev)
+  local cid = storage.path_requests and storage.path_requests[ev.id]
+  if not cid then return end
+  storage.path_requests[ev.id] = nil
+  local q = storage.walking_queues and storage.walking_queues[cid]
+  if not q then return end
+  q.path_pending = false
+  if ev.path and #ev.path > 0 then
+    q.path = ev.path           -- array of {position=, needs_destroy_to_reach=}
+    q.path_idx = 1
+    -- DIAGNOSTIC (task #49, 2026-07-09): needs_destroy_to_reach is stored above but was
+    -- NEVER consulted anywhere in process_walking_queues -- if the pathfinder's route
+    -- requires destroying something (a rock too big for the generic radius=2/4
+    -- tree/rock scan, or a cliff, which needs explosives rather than mining_state) at a
+    -- waypoint, the mod would just aim at that waypoint's position forever with no code
+    -- path to act on it. Logging (not yet fixing) to confirm/refute this live before
+    -- writing a fix, per this project's own mandatory live-verify-before-fixing rule.
+    for _, wp in ipairs(ev.path) do
+      if wp.needs_destroy_to_reach then
+        u.log_error(string.format(
+          "walking path for companion %d needs_destroy_to_reach near (%.1f,%.1f) -- "
+          .. "NOT currently acted on, character will likely get stuck here", cid,
+          wp.position.x, wp.position.y), "walk_path_needs_destroy")
+        break
+      end
+    end
+  else
+    q.path = nil               -- no route found / try later -> straight-line fallback
+    q.path_failed_tick = game.tick
+    -- DIAGNOSTIC (task #49, 2026-07-09): distinguishes "pathfinder genuinely found no
+    -- route" (this branch) from "needs to destroy something" (above) and from "still
+    -- pending" -- the three collapse into identical straight-line+bypass behavior today,
+    -- but have very different real causes/fixes.
+    u.log_error(string.format(
+      "walking path request for companion %d returned NO PATH (target=(%.1f,%.1f))",
+      cid, q.target and q.target.x or -1, q.target and q.target.y or -1),
+      "walk_path_no_path")
+    -- RARE-WALK-01 (2026-07-19/20, Zdendys's save-for-later-review scheme -- see
+    -- STATUS.md and u.rare_symptom_save's own comment for the full mechanism):
+    -- captures the exact moment/state of a no-path failure for later visual
+    -- inspection, debounced per-code so a repeat within the cooldown doesn't spam.
+    u.rare_symptom_save("RARE-WALK-01")
+  end
+end)
+
+-- Walking queues: follow a pathfinder route around obstacles when available, with
+-- straight-line + perpendicular bypass as the fallback for small obstacles.
+local function process_walking_queues()
   if not storage.walking_queues then return end
   for cid, q in pairs(storage.walking_queues) do
     local c = u.get_companion(cid)
@@ -189,14 +369,496 @@ script.on_nth_tick(5, function(ev)
       else storage.walking_queues[cid] = nil; goto skip end
     end
     if not q.target then storage.walking_queues[cid] = nil; goto skip end
-    local e, dist = c.entity, u.distance(c.entity.position, q.target)
+    local e = c.entity
+    -- TARGET-WALKABILITY FIX (2026-07-24, Zdendys, live discussion: confirmed real gap --
+    -- fac_move_to()/go_to() pass a requested (x,y) through completely unvalidated; a
+    -- target genuinely on water or under a building footprint gets a flat, permanent
+    -- "no path" from request_walk_path below (its own radius=2 pathfinder tolerance only
+    -- ever rescues a target that's merely NEAR unwalkable ground, not one that IS
+    -- unwalkable itself) -- with no fallback to a nearby walkable tile at all. Fixed HERE
+    -- (once per queue entry, not every tick) rather than in each of the ~7 individual
+    -- writers of storage.walking_queues (fac_move_to, queues_build's approach walk,
+    -- task_pool.lua's step-driven movement, etc. -- see fac_move_to's own
+    -- giveup_enabled comment for that full list) so the fix applies uniformly to all of
+    -- them from one place. find_non_colliding_position is the SAME primitive
+    -- find_reachable_resource (queues_gather.lua) already uses for "can the companion
+    -- stand here" checks -- if q.target is already walkable it returns (very close to)
+    -- the same position unchanged, so this is a no-op for the ordinary case.
+    -- follow_player is deliberately EXCLUDED: its own branch just above reassigns
+    -- q.target to a REAL player's own live position every tick (see that branch's own
+    -- code) -- always already valid, and re-checking every tick would be wasted work.
+    -- Gated by q.target_checked so this only runs ONCE per queue entry: confirmed (see
+    -- this fix's own research pass) every non-follow_player writer of
+    -- storage.walking_queues always allocates a FRESH table for a new destination
+    -- (never mutates an existing entry's .target in place), so a stale flag from an
+    -- earlier, different target can never survive onto a new one.
+    if not q.follow_player and not q.target_checked then
+      q.target_checked = true
+      local ok, corrected = pcall(function()
+        return e.surface.find_non_colliding_position(
+          "character", q.target, WALK_TARGET_WALKABLE_RADIUS, 0.5)
+      end)
+      if ok and corrected and u.distance(corrected, q.target) > 0.1 then
+        u.log_error(string.format(
+          "walk target (%.1f,%.1f) for companion %d was not walkable -- retargeting to "
+          .. "nearest walkable position (%.1f,%.1f)",
+          q.target.x, q.target.y, cid, corrected.x, corrected.y), "walk_target_retargeted")
+        q.target = {x = corrected.x, y = corrected.y}
+      end
+      -- else: q.target left unchanged -- either it was already walkable, or nothing
+      -- walkable exists within WALK_TARGET_WALKABLE_RADIUS; request_walk_path below
+      -- will report a genuine no-path in that case, same as before this fix existed
+      -- (no regression -- this only ever RESCUES a previously-guaranteed failure, never
+      -- introduces a new one).
+    end
+    local dist = u.distance(e.position, q.target)
+
+    -- Proactive reach=1 clearing (2026-07-05, Zdendys): "whenever the companion
+    -- encounters a decorative rock (an entity, not an ore deposit), or any tree
+    -- (within reach 1 of the character), it mines it" -- ANY tree or decorative rock within reach=1 gets mined on
+    -- sight, regardless of whether the companion is stuck, still approaching, or has
+    -- just arrived. MUST run unconditionally BEFORE the dist<2 arrival check below, not
+    -- inside the still-approaching `else` branch: live-testing found the two states race
+    -- -- a target whose collision box keeps the companion within [1, 2) tiles (e.g. a
+    -- big-rock placed as the destination itself) satisfies "arrived" (dist<2) on the very
+    -- tick it FIRST comes within reach=1, so a check placed only in the "still walking"
+    -- branch never runs at all for that tick (arrival short-circuits into the `if` branch
+    -- and removes the queue entry before the `else`'s clearing logic is ever reached).
+    --
+    -- NATIVE sustained mining (2026-07-05, Zdendys: "to je zakladni pozadavek jakehokoli
+    -- mininguu, to mod nevi?" -- correctly called out): a big-rock's mining_time is real
+    -- (tens of ticks or more, same as a player holding the mine button) -- a single
+    -- scripted `entity.mine{}` call does NOT model that gradual progress and simply fails
+    -- silently on anything with non-trivial mining_time. Reusing the EXACT pattern already
+    -- proven for ore/resource harvesting elsewhere in this mod (queues.lua's
+    -- start_mining_next/tick_harvest_queues): set `selected` + `mining_state={mining=true,
+    -- position=...}` and let the GAME ENGINE run the real mining cycle -- same speed,
+    -- animation, extraction as a real player. `q.clearing_target` tracks which entity is
+    -- currently being sustained-mined so mining_state is only ever ASSIGNED once per
+    -- target: re-assigning it every cycle (every 5 ticks here) would restart the engine's
+    -- mining_time countdown from zero every time and it would NEVER complete (the exact
+    -- "re-setting mining_state every tick" bug already caught and fixed in
+    -- tick_gather_queues, 2026-07-03).
+    if q.clearing_target and not q.clearing_target.valid then
+      q.clearing_target = nil  -- previous target is gone (fully mined, or otherwise removed)
+    end
+    -- Stale-but-still-valid target guard (cubic-dev-ai bot, 2026-07-05): a target only
+    -- ever got cleared above when the ENTITY itself became invalid -- not when the
+    -- companion simply walked away from it (e.g. redirected to a new q.target, or
+    -- follow_player moved elsewhere). Factorio's engine auto-cancels mining_state.mining
+    -- once the selected entity is out of reach, but q.clearing_target itself stayed set
+    -- (still a valid entity, just distant) -- and since ALL new-target acquisition below
+    -- is gated by `if not q.clearing_target`, a stale distant target would silently block
+    -- the reach=2 AND the radius=4 stuck-fallback scans from EVER picking a new, genuinely
+    -- nearby obstacle again, for as long as this walking_queue entry lives (which can be
+    -- indefinitely in follow_player mode). 6 tiles = a bit more than the widest radius
+    -- (4) either scan below can acquire a target from, so this only fires once the
+    -- companion has clearly moved on, not from ordinary approach jitter at the boundary.
+    if q.clearing_target and u.distance(e.position, q.clearing_target.position) > 6 then
+      q.clearing_target = nil
+    end
+    if not q.clearing_target then
+      -- radius=2, not a literal 1 (2026-07-05, live-tested): collision keeps the
+      -- companion's CENTER measurably farther than 1 tile from a big/huge-rock's
+      -- CENTER (their collision box extends to ~1-1.5 tiles from center, confirmed via
+      -- prototypes.entity[...].collision_box) -- the companion stably parks at ~1.6
+      -- tiles away, which IS "right next to it" in any visual/practical sense, just not
+      -- within a literal radius=1 sample from center-to-center. radius=2 matches the
+      -- SAME threshold this function already uses elsewhere for "arrived" (dist<2), and
+      -- still only ever catches things genuinely adjacent (trees have a much smaller
+      -- ~0.4-tile collision box and stop even closer).
+      local adjacent = find_clearable_obstacles(e.surface, e.position, 2)
+      if adjacent[1] then
+        q.clearing_target = adjacent[1]
+      end
+    end
+    if q.clearing_target then
+      if e.selected ~= q.clearing_target then
+        e.selected = q.clearing_target
+      end
+      if not e.mining_state.mining then
+        e.mining_state = {mining = true, position = q.clearing_target.position}
+      end
+    end
+
     if dist < 2 then
       e.walking_state = {walking = false}
-      if not q.follow_player then storage.walking_queues[cid] = nil end
+      if not q.follow_player then
+        -- Stash BEFORE nilling (2026-07-26, see init_storage's own comment on
+        -- storage.walk_last_arrived for the full race this closes) -- q.target
+        -- here is already the walkability-CORRECTED point (target_checked ran
+        -- earlier this same tick pass, at the top of this function), exactly
+        -- what a caller polling immediately after this clears needs to recover.
+        storage.walk_last_arrived[cid] = {x = q.target.x, y = q.target.y, tick = game.tick}
+        storage.walking_queues[cid] = nil
+      end
+      q.stuck_ticks = 0
+      q.bypass_ticks = 0
     else
-      local dir = u.get_direction(e.position, q.target)
-      if dir then e.walking_state = {walking = true, direction = dir} end
+      -- Fast giveup (2026-07-16, Zdendys's directive): ONLY for fac_move_to()-driven
+      -- walks (q.giveup_enabled, set in commands/move.lua -- every OTHER caller of
+      -- this same walking-queue mechanism, e.g. queues.start_build's own approach
+      -- walk or task_pool.lua's step-driven movement, is completely untouched by
+      -- this block, byte-identical to before). Tracks NET WORLD-SPACE displacement
+      -- over rolling ~60-ACTIVE-tick windows (ACTIVE = excludes ticks spent waiting
+      -- on a pending pathfind request, per Zdendys's own explicit "nepocitat dobu
+      -- vypoctu trasy" requirement) rather than the EXISTING per-sample q.stuck_ticks
+      -- check just below (which resets on ANY physical movement, including a
+      -- perpendicular bypass step that doesn't actually unstick her at all -- an
+      -- oscillating companion that bypasses left-right-left forever would never trip
+      -- q.stuck_ticks, since each individual bypass tick genuinely moves her).
+      -- Deliberately NET POSITION, not distance-to-target (Zdendys's own correction):
+      -- distance-to-target would misfire on a legitimate pathfinder detour that goes
+      -- AWAY from the target first ("sometimes it's necessary to go back by 180
+      -- degrees"); net position change is immune to that -- see the check itself, below.
+      --
+      -- Threshold: 600 active ticks (Zdendys's own explicit number, 2026-07-16: "I'd
+      -- give it 600! In real speed that's 10s, that should get the companion closer
+      -- to the target on the starting map" -- 10 real seconds at game.speed=1, comfortably
+      -- above a single bypass cycle (50 ticks) and the now-capped 4 bypass attempts
+      -- (see q.bypass_attempts just below, also 2026-07-16) -- this must NOT
+      -- reintroduce the 2026-07-06 regression (an earlier, too-aggressive stuck
+      -- check gave up on a target that WAS reachable, confirmed live). Still a
+      -- MASSIVE improvement over companion.py's own current real-wall-clock-based
+      -- give-up (observed live: ~8640 ticks, i.e. up to 36 real seconds at typical
+      -- FACTORIO_GAME_SPEED), and measured in game ticks so it behaves identically
+      -- regardless of game.speed, unlike that Python-side mechanism. 10 windows of
+      -- 60 active ticks each = 600.
+      --
+      -- Outcome (Zdendys: "the mod tells Py that the target is unreachable", not a raw counter
+      -- -- and if <4 tiles from target, report 'approx_arrived' instead of a hard
+      -- failure, since that's "plenty sufficient" for most construction): stashed
+      -- in storage.walk_last_outcome[cid], consumed once by fac_companion_position's
+      -- handler (commands/companion.lua) the next time companion.py polls position
+      -- -- no new RCON round-trip needed on either side.
+      if q.giveup_enabled then
+        if not q.path_pending then
+          q.active_ticks = (q.active_ticks or 0) + 5
+        end
+        if not q.checkpoint_active_ticks then
+          q.checkpoint_active_ticks = q.active_ticks or 0
+          q.checkpoint_pos = {x = e.position.x, y = e.position.y}
+        elseif (q.active_ticks or 0) - q.checkpoint_active_ticks >= 60 then
+          -- NET WORLD-SPACE displacement since the last checkpoint (2026-07-16,
+          -- Zdendys's own correction: comparing DISTANCE-TO-TARGET here instead, as
+          -- an earlier draft of this did, would misfire on a legitimate pathfinder
+          -- detour that goes AWAY from the target first -- "sometimes it's necessary
+          -- to go back (by 180 degrees) and try a different direction at a greater
+          -- distance" --
+          -- that raises distance-to-target even while making completely genuine
+          -- progress along a real route. Net position change is immune to this: a
+          -- companion actually walking a detour (even backward) covers REAL ground
+          -- every window; only genuine in-place stalling/oscillating (e.g. repeated
+          -- bypass attempts that cancel out) shows near-zero net displacement.
+          local net_moved = u.distance(q.checkpoint_pos, e.position)
+          if net_moved < 0.3 then
+            q.stall_windows = (q.stall_windows or 0) + 1
+          else
+            q.stall_windows = 0
+          end
+          q.checkpoint_active_ticks = q.active_ticks
+          q.checkpoint_pos = {x = e.position.x, y = e.position.y}
+          if q.stall_windows >= 10 then
+            storage.walk_last_outcome[cid] = {
+              result = (dist < 4) and "approx_arrived" or "unreachable",
+              tick = game.tick,
+            }
+            storage.walking_queues[cid] = nil
+            e.walking_state = {walking = false}
+            goto skip
+          end
+        end
+      end
+
+      -- Pathfind around big obstacles (water/cliffs): request a route once per
+      -- target, then steer toward the current WAYPOINT instead of straight at the
+      -- final goal. Falls back to straight-line below while no route is available.
+      -- timeout a stuck pending request: if the finished-event never arrives (e.g. the
+      -- request id was lost across save/load), reset so pathfinding isn't disabled forever.
+      if q.path_pending and q.path_req_tick and (game.tick - q.path_req_tick) > 600 then
+        q.path_pending = false
+        q.path_failed_tick = game.tick
+      end
+      if not q.follow_player and not q.path and not q.path_pending then
+        local cooling = q.path_failed_tick and (game.tick - q.path_failed_tick) < 180
+        if not cooling then request_walk_path(cid, q, e) end
+      end
+      -- Wait for the FIRST pathfind result before moving at all (2026-07-16, Zdendys:
+      -- "mel by pockat na dorazeni trasy od pathfinderu" -- a small-peninsula/dead-end
+      -- scenario: straight-line steering toward q.target while the smarter route is
+      -- STILL being computed could walk the companion onto a dead-end peninsula
+      -- jutting into water BEFORE the real detour around it is even known, since
+      -- q.path is nil the whole time a request is pending -- goal would otherwise
+      -- fall through to the plain q.target below and steer straight at it). Only
+      -- gates the FIRST-ever pathfind for this target (path_pending true AND no path
+      -- decided EITHER way yet) -- once path_pending resolves (a real route, OR a
+      -- confirmed "no path found" -- see on_script_path_request_finished), normal
+      -- waypoint-following/straight-line-fallback logic below runs exactly as
+      -- before, unchanged. Applies to EVERY walk (task-pool steps, start_build's own
+      -- approach walk, follow_player is naturally excluded since it never sets
+      -- path_pending at all), not just fac_move_to's giveup_enabled ones -- this is
+      -- a general correctness fix, not scoped to the fast-giveup feature above.
+      -- (Zdendys separately asked whether the NEXT target's path could be
+      -- precomputed while still finishing the CURRENT one, hiding this wait
+      -- entirely -- not implemented here: this project's Python side has no
+      -- forward-looking queue of upcoming movement targets today, each go_to() is
+      -- issued one at a time and Python doesn't know/decide its next destination
+      -- until the current call returns, so there is no "next target" to precompute
+      -- against yet. A real architectural change, not part of this fix.)
+      if q.path_pending and not q.path then
+        e.walking_state = {walking = false}
+        goto skip
+      end
+      local goal = q.target
+      if q.path and q.path_idx then
+        while q.path[q.path_idx] and u.distance(e.position, q.path[q.path_idx].position) < 2 do
+          q.path_idx = q.path_idx + 1
+        end
+        if q.path[q.path_idx] then
+          goal = q.path[q.path_idx].position
+          -- Proactively clear a FLAGGED waypoint's obstacle (task #49, 2026-07-09):
+          -- needs_destroy_to_reach was stored on q.path entries since this was written
+          -- but never consulted anywhere -- confirmed live (test_walk_stuck_diag.py)
+          -- that the pathfinder DOES set this flag in real play. The generic reach=2/4
+          -- stuck-clearing above only searches near the CHARACTER's current position,
+          -- which may never trigger if the flagged waypoint is still several tiles
+          -- ahead and the character isn't yet "stuck" by the moved<0.3 measure -- search
+          -- right at the WAYPOINT instead, so a mineable tree/rock blocking it gets
+          -- targeted before the character ever walks into it.
+          if q.path[q.path_idx].needs_destroy_to_reach and not q.clearing_target then
+            local blockers = find_clearable_obstacles(e.surface, goal, 2)
+            if blockers[1] then
+              q.clearing_target = blockers[1]
+              e.selected = blockers[1]
+              e.mining_state = {mining = true, position = blockers[1].position}
+              -- Positive-path diagnostic (task #49, 2026-07-09): without this, a run
+              -- where the flag fires AND gets successfully cleared looks IDENTICAL to a
+              -- run where it never fired at all (both show 0 walk_path_* log entries) --
+              -- logged so live verification can actually distinguish "never triggered"
+              -- from "triggered and this fix handled it".
+              u.log_error(string.format(
+                "walking path for companion %d needs_destroy_to_reach at (%.1f,%.1f) -- "
+                .. "found %s, clearing it now", cid, goal.x, goal.y, blockers[1].name),
+                "walk_path_clearing")
+            else
+              -- Flagged but no mineable tree/rock found there -- most likely a cliff,
+              -- which needs cliff-explosives (a separate mechanic, not handled here).
+              -- Logged distinctly so this stays a visible, trackable case instead of
+              -- silently stalling with no diagnostic trail.
+              u.log_error(string.format(
+                "walking path for companion %d needs_destroy_to_reach at (%.1f,%.1f) but "
+                .. "no mineable tree/rock found there -- likely a cliff (needs explosives, "
+                .. "not yet handled)", cid, goal.x, goal.y), "walk_path_unclearable")
+              -- RARE-WALK-02 (2026-07-19/20, save-for-later-review scheme -- see
+              -- u.rare_symptom_save's own comment): this is the genuine
+              -- "decided a destroy is needed but it never actually happens" case
+              -- today (the OLDER walk_path_needs_destroy log a few lines up fires
+              -- unconditionally whenever a waypoint is flagged, even when the
+              -- "walk_path_clearing" branch above successfully handles it moments
+              -- later -- this branch is the one where clearing genuinely fails).
+              u.rare_symptom_save("RARE-WALK-02")
+            end
+          end
+        else
+          q.path = nil  -- consumed all waypoints; head straight to final target
+        end
+      end
+
+      -- WAYPOINT-STALL TRACKING (2026-07-25, robust re-path trigger -- see the
+      -- if/elseif chain below's own comment for why this replaced an earlier
+      -- attempt keyed off q.bypass_attempts): ticks since q.path_idx last
+      -- genuinely ADVANCED to a new waypoint. A direct, tamper-proof measure of
+      -- "how long stuck on THIS SPECIFIC waypoint", independent of the bypass
+      -- sub-mechanism's own internal bookkeeping.
+      if q.path and q.path_idx then
+        if q.last_path_idx ~= q.path_idx then
+          q.last_path_idx = q.path_idx
+          q.waypoint_stall_ticks = 0
+        else
+          q.waypoint_stall_ticks = (q.waypoint_stall_ticks or 0) + 5
+        end
+      else
+        q.waypoint_stall_ticks = 0
+        q.last_path_idx = nil
+      end
+
+      -- Stuck detection: compare position to previous call
+      local prev = q.prev_pos
+      local moved = prev and u.distance(prev, e.position) or 1
+      q.prev_pos = {x = e.position.x, y = e.position.y}
+
+      -- Stuck AND nothing within reach=1 to sustained-mine (the block above already
+      -- covers the common case): the actual blocker may be slightly farther away than
+      -- reach=1 (a wider obstacle's collision edge, or simply not centered under the
+      -- reach=1 sample point) -- widen the search to radius=4 and target it via the SAME
+      -- q.clearing_target + mining_state mechanism (not a separate one-shot entity.mine{}
+      -- -- same reasoning as above: mining_time is real, one-shot calls fail silently).
+      if moved < 0.3 and not q.clearing_target then
+        local nearby = find_clearable_obstacles(e.surface, e.position, 4)
+        if nearby[1] then
+          q.clearing_target = nearby[1]
+          e.selected = nearby[1]
+          e.mining_state = {mining = true, position = nearby[1].position}
+        end
+      end
+
+      if moved < 0.3 then
+        q.stuck_ticks = (q.stuck_ticks or 0) + 1
+      elseif (q.bypass_ticks or 0) == 0 and not q.bypass_just_ended then
+        -- Only clear stuck/bypass state on CONFIRMED genuine resumed movement --
+        -- NOT merely "moved at all this tick" (2026-07-17 live-caught: "Zaseknuti o
+        -- trubku, meni smer, leva prava asi 1000x, bez uspechu" -- a companion
+        -- trapped between two symmetric dead ends, e.g. a just-placed pipe row on
+        -- one side and water on the other). Root cause: this branch used to fire
+        -- UNCONDITIONALLY whenever moved>=0.3, including on every tick the bypass
+        -- ITSELF was actively walking her perpendicular (genuine displacement, but
+        -- not evidence she's actually unstuck) -- wiping bypass_ticks/bypass_side/
+        -- bypass_attempts before the bypass's own intended 10-tick duration ever
+        -- completed, AND before bypass_attempts could ever accumulate past 1 toward
+        -- its documented 4-attempt cap (see the elseif below: "2 rounds of
+        -- left+right"). The result: every stuck cycle restarted from scratch
+        -- (bypass_side always re-derives to the SAME first side from nil, never
+        -- truly alternating; bypass_attempts never reaches the cap), so the 4-cap
+        -- never engaged and she oscillated indefinitely within the outer
+        -- approach_deadline window instead of giving up on both directions after 4
+        -- tries. Two guards now gate the reset: (a) q.bypass_ticks==0 -- don't
+        -- interrupt an in-progress bypass sequence just because ITS OWN motion
+        -- counts as displacement; (b) q.bypass_just_ended (set for exactly one tick
+        -- right after a bypass sequence's last tick, below) -- the tick immediately
+        -- following bypass completion still reflects the bypass's OWN tail motion,
+        -- not yet a confirmed return to genuine forward progress; only a LATER tick
+        -- (a full cycle of the ordinary "walk toward target" branch actually
+        -- producing displacement) can honestly confirm she's moving again.
+        q.stuck_ticks = 0
+        q.bypass_side = nil
+        q.bypass_attempts = nil
+      end
+      q.bypass_just_ended = false
+
+      local dir_to_target = u.get_direction(e.position, goal)
+
+      if (q.waypoint_stall_ticks or 0) >= WAYPOINT_STALL_REPATH_TICKS and q.path then
+        -- RE-PATH AFTER PROLONGED WAYPOINT STALL (2026-07-25, Zdendys: 2nd of 3
+        -- confirmed walking-obstacle gaps -- a NEW obstacle appearing mid-route,
+        -- after a path was already computed, was never re-routed around; only
+        -- the perpendicular bypass below ever reacted, and the OLD code had NO
+        -- escalation once bypass alone couldn't solve it -- blind straight-line
+        -- movement toward the SAME blocked waypoint, forever, repeating the
+        -- identical failed step every cycle with no further recovery until the
+        -- OUTER fast-giveup mechanism eventually gave up entirely (600 active
+        -- ticks of near-zero net displacement, further below).
+        --
+        -- FIRST ATTEMPT at this fix (kept as a reminder, same "verify live, not
+        -- statically" lesson as several other fixes this project has caught the
+        -- same way) keyed the trigger off `q.bypass_attempts >= 4` (the bypass
+        -- mechanism's own documented 4-attempt cap) -- live-caught via a
+        -- dedicated debug command (fac_debug_walk_state) that bypass_attempts
+        -- almost never actually reaches 4 against a wide, genuinely-blocking
+        -- obstacle: q.stuck_ticks resets to 0 the MOMENT each bypass round
+        -- starts (by that branch's own pre-existing design, so a fresh stuck
+        -- period can be measured post-bypass), and the bypass's own tail-end
+        -- residual motion can satisfy "moved>=0.3" for more than the single
+        -- sample q.bypass_just_ended suppresses -- letting the stuck-detection
+        -- block's own "assume genuinely unstuck" reset (above) wipe
+        -- bypass_attempts back to nil before it ever re-accumulates to 4, even
+        -- though no REAL progress (reaching a NEW waypoint) ever happened.
+        -- Replaced with waypoint_stall_ticks (tracked just above this chain):
+        -- directly measures the thing that actually matters -- how long has
+        -- q.path_idx failed to advance -- and cannot be reset by the bypass
+        -- sub-mechanism's own internal churn, regardless of how that behaves.
+        --
+        -- Clearing q.path/q.path_idx makes the request_walk_path gate above
+        -- (`not q.path and not q.path_pending`) fire again next cycle --
+        -- Factorio's own pathfinder always plans against CURRENT, live
+        -- collision state, so it naturally routes around whatever NEW obstacle
+        -- now blocks the old route; no explicit blacklist of the blocked
+        -- waypoint is needed. All stuck/bypass/stall state is reset for a
+        -- clean slate once the new route arrives. Deliberately no separate
+        -- retry-count cap added here: the EXISTING outer fast-giveup mechanism
+        -- already bounds the worst case if repeated stall/re-path cycles
+        -- genuinely never make progress (a persistent, unroutable obstacle
+        -- still correctly ends in "unreachable"/"approx_arrived" after 600
+        -- active ticks, same as before this fix -- just via more attempts at
+        -- ACTUALLY escaping first, not fewer).
+        u.log_error(string.format(
+          "walking path for companion %d stalled on the same waypoint for %d "
+          .. "ticks -- requesting a fresh path around the current obstacle "
+          .. "instead of repeating the same blocked step", cid,
+          q.waypoint_stall_ticks), "walk_path_repath_after_stuck")
+        q.path = nil
+        q.path_idx = nil
+        q.last_path_idx = nil
+        q.waypoint_stall_ticks = 0
+        q.stuck_ticks = 0
+        q.bypass_attempts = nil
+        q.bypass_side = nil
+        q.bypass_ticks = 0
+        e.walking_state = {walking = false}
+      elseif (q.bypass_ticks or 0) > 0 then
+        -- Continue bypass: walk perpendicular to unblock
+        if q.bypass_dir then
+          e.walking_state = {walking = true, direction = q.bypass_dir}
+        end
+        q.bypass_ticks = q.bypass_ticks - 1
+        if q.bypass_ticks == 0 then
+          -- Flags the NEXT tick's stuck-check (above) to skip the reset once --
+          -- see that check's own comment for why (this bypass's own last tick of
+          -- perpendicular motion isn't yet confirmed genuine forward progress).
+          q.bypass_just_ended = true
+        end
+      elseif (q.stuck_ticks or 0) >= 4 and (q.bypass_attempts or 0) < 4 then
+        -- Stuck for ~0.3s: try perpendicular bypass, alternating left/right. Capped
+        -- at 4 attempts total (2026-07-16, Zdendys: "it's enough to try each
+        -- direction once, at most 2x, to find out it doesn't work" -- 2 rounds of left+right) -- once
+        -- neither direction has unstuck her after 2 full rounds, repeating the SAME
+        -- two directions indefinitely is pure wasted cycles; the pathfinder's own
+        -- separate periodic retry (request_walk_path's 180-tick cooldown, below)
+        -- is a genuinely DIFFERENT recovery strategy and keeps running regardless
+        -- of this cap. Reset to 0 (not nil) the moment real movement resumes
+        -- (the `else` branch just above), giving a fresh set of attempts for the
+        -- NEXT time she gets stuck, rather than a one-shot lifetime budget.
+        q.stuck_ticks = 0
+        q.bypass_attempts = (q.bypass_attempts or 0) + 1
+        q.bypass_side = ((q.bypass_side or 0) + 1) % 2
+        local perp_dirs = {
+          [defines.direction.north] = {defines.direction.west, defines.direction.east},
+          [defines.direction.south] = {defines.direction.east, defines.direction.west},
+          [defines.direction.east]  = {defines.direction.north, defines.direction.south},
+          [defines.direction.west]  = {defines.direction.south, defines.direction.north},
+          [defines.direction.northeast] = {defines.direction.northwest, defines.direction.southeast},
+          [defines.direction.southeast] = {defines.direction.northeast, defines.direction.southwest},
+          [defines.direction.southwest] = {defines.direction.southeast, defines.direction.northwest},
+          [defines.direction.northwest] = {defines.direction.southwest, defines.direction.northeast},
+        }
+        local choices = dir_to_target and perp_dirs[dir_to_target]
+        if choices then
+          q.bypass_dir = choices[(q.bypass_side % 2) + 1]
+          q.bypass_ticks = 10  -- bypass for 10 calls (~0.5s)
+          e.walking_state = {walking = true, direction = q.bypass_dir}
+        end
+      else
+        -- Normal movement toward target
+        if dir_to_target then e.walking_state = {walking = true, direction = dir_to_target} end
+      end
     end
     ::skip::
   end
+end
+
+script.on_nth_tick(5, function(ev)
+  if ev.tick % 1800 == 0 then cleanup_messages() end
+  -- Update map markers every 30 ticks (0.5 sec)
+  if ev.tick % 30 == 0 then update_companion_markers() end
+  -- Process all tick-based queues (each guarded so one failure can't kill the rest)
+  guard_tick("harvest", queues.tick_harvest_queues, ev.tick)
+  guard_tick("gather",  queues.tick_gather_queues,  ev.tick)
+  guard_tick("fuel",    queues.tick_fuel_queues,    ev.tick)
+  guard_tick("craft",   queues.tick_craft_queues,   ev.tick)
+  guard_tick("build",   queues.tick_build_queues,   ev.tick)
+  guard_tick("belt",    queues.tick_belt_queues,    ev.tick)
+  guard_tick("combat",  queues.tick_combat_queues,  ev.tick)
+  guard_tick("walking", process_walking_queues,     ev.tick)
+  guard_tick("spectate", spectate.tick_spectators,  ev.tick)
+  guard_tick("orphan_mining", queues.tick_orphan_mining_cleanup, ev.tick)
+  guard_tick("task_pool", task_pool.tick, ev.tick)
 end)

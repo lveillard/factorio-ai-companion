@@ -1,0 +1,180 @@
+#!/bin/bash
+# Pre-commit hook (TRACKED in the repo, unlike the old .git/hooks/pre-commit which lived
+# only inside .git/ and would be lost on a fresh clone). Wired in via:
+#   git config core.hooksPath .githooks
+#
+# Two jobs:
+#   1) Auto-bump factorio-mod/info.json patch version whenever any other mod file changes
+#      (original behavior, preserved as-is).
+#   2) MECHANICAL self-review checks (2026-07-05) -- Zdendys, after cubic-dev-ai bot caught
+#      the SAME bug classes 3 times in one night: "run these checks before commit too, so
+#      ChatGPT doesn't have to keep bothering us with spam" + "set it up so that it's always
+#      reliable, not dependent on whether I happen to remember it". A checklist written into
+#      CLAUDE.md/memory still depends on remembering to read it -- this hook does NOT: it
+#      greps the actual staged diff for the exact patterns that caused real bugs and REFUSES
+#      the commit (exit 1) until fixed or explicitly bypassed with `git commit --no-verify`
+#      (a deliberate, visible override, not a silently-ignorable warning).
+#
+# See CLAUDE.md's "CHECKLIST BEFORE EVERY COMMIT" for the full human-readable checklist --
+# this hook mechanically enforces the subset that's actually grep-able.
+set -e
+
+info="factorio-mod/info.json"
+
+# --- 1) Mechanical self-review checks over staged .lua diffs (runs FIRST, before the
+#     version bump below -- otherwise a blocked commit leaves a bumped-but-uncommitted
+#     info.json staged, and every retried attempt would bump it again). ---
+fail=0
+# `-c core.quotepath=false` (independent Workflow review, 2026-07-05): without it, git
+# quotes/octal-escapes non-ASCII filenames in --name-only output (default core.quotePath),
+# so a renamed/added Lua file with e.g. accented characters would silently fail to match
+# '\.lua$'. `--diff-filter=ACMR` (was ACM): a plain rename (R) was excluded entirely, so
+# renaming e.g. queues.lua while also editing it would skip these checks on that file.
+lua_files=$(git -c core.quotepath=false diff --cached --name-only --diff-filter=ACMR | grep '\.lua$' || true)
+if [ -n "$lua_files" ]; then
+  # Read via a here-string (not `for f in $lua_files`, which word-splits on ALL IFS
+  # whitespace and would mangle/silently-skip a path containing a space) -- `<<<` runs
+  # the loop body in the CURRENT shell (unlike a `| while` pipe), so `fail=1` set inside
+  # correctly persists after the loop (cubic dev ai bot, 2026-07-05).
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    # A) Tie-break first-vs-nearest: find_entities_filtered{...}[1] added -- picks the
+    #    FIRST match, not the nearest to target. Real bug 2x tonight (fac_inserter_set_filter,
+    #    fac_building_rotate) before fac_building_empty/_fill's nearest-by-distance pattern
+    #    was copied over.
+    # Joined per-hunk, not per-line (independent Workflow review, 2026-07-05): a single-line
+    # grep misses the multi-line table-constructor style already used at control.lua:291 /
+    # commands/queues.lua:974 / commands/combat.lua:13, e.g.:
+    #   local e = s.find_entities_filtered{
+    #     name = 'stone-furnace',
+    #     position = {x=x, y=y},
+    #   }[1]
+    # where the opening `find_entities_filtered{` and closing `}[1]` are on different added
+    # lines. Awk concatenates all '+' lines WITHIN one hunk (reset at each '@@' header) into
+    # one buffer before matching -- confined to a hunk (not the whole diff) so two unrelated
+    # edits elsewhere in the same file can't be spuriously joined into a false match. `.*`
+    # (not `[^}]*`) because the real pattern nests braces (`position={x=x,y=y}`), same
+    # greedy-vs-nested-braces tradeoff as before (favors over-blocking a false positive over
+    # silently missing the real bug).
+    hits=$(git diff --cached -U0 -- "$f" | awk '
+      /^@@/ {
+        if (buf ~ /find_entities_filtered[ \t]*\{.*\}[ \t]*\[1\]/) print "  (multi-line) " buf
+        buf = ""
+        next
+      }
+      /^\+/ && !/^\+\+\+/ {
+        line = $0
+        sub(/^\+/, "", line)
+        buf = buf " " line
+      }
+      END {
+        if (buf ~ /find_entities_filtered[ \t]*\{.*\}[ \t]*\[1\]/) print "  (multi-line) " buf
+      }
+    ' || true)
+    if [ -n "$hits" ]; then
+      echo "[pre-commit][BLOCK] $f: find_entities_filtered{...}[1] added -- this takes the"
+      echo "  FIRST match, NOT the nearest to target. If >1 candidate could ever be in range,"
+      echo "  select nearest by distance instead (pattern: fac_building_empty/_fill in"
+      echo "  building.lua). If genuinely only ever one candidate, add a comment saying so."
+      echo "$hits"
+      fail=1
+    fi
+    # B) New tick_*_queues state-machine function with no approach_deadline ADDED in the
+    #    SAME hunk -- async queues waiting on companion movement need a bounded deadline
+    #    (mirror tick_gather_queues/tick_fuel_queues) or a permanently-blocked tile hangs
+    #    forever. Anchored to '^\+' (added lines only, cubic dev ai bot, 2026-07-05): without
+    #    it, a commit that REMOVES old approach_deadline code while adding a new deadline-less
+    #    tick_*_queues function would incorrectly pass (the removed '-' line still matches
+    #    a bare grep for the string).
+    # Hunk-scoped, not whole-file (2nd independent Workflow review, 2026-07-05): the previous
+    # version ran both greps over the ENTIRE per-file diff independently, so an unrelated
+    # added line elsewhere in the same file's diff containing the substring
+    # "approach_deadline" (e.g. bumping an existing timeout constant in a totally different
+    # hunk, or even just a comment) would satisfy the requirement for a brand-new, genuinely
+    # unbounded tick_*_queues function -- empirically confirmed to slip through. Same awk
+    # hunk-buffer technique as check A above (reset at each '@@' header) so only text ADDED
+    # WITHIN THE SAME HUNK as the new function counts. `[A-Za-z0-9_]+` (not `\w+`) in the awk
+    # pattern to avoid relying on awk's less consistently-supported \w extension (grep -E's
+    # \w was independently verified to work across GNU/BusyBox-musl/BSD, but that
+    # verification doesn't cover awk).
+    # KNOWN, ACCEPTED limitation (delta-review agent, 2026-07-05, empirically reproduced):
+    # `git diff -U0` splits ONE logical change into multiple hunks whenever the changed
+    # lines aren't adjacent -- e.g. renaming an existing function into a new tick_*_queues
+    # name (one hunk) while adding its approach_deadline further down in the same,
+    # otherwise-unchanged function body (a second, separate hunk once the unchanged middle
+    # lines provide no U0 bridge). This hunk-scoped check would then wrongly BLOCK that
+    # legitimate single-commit change, since the deadline isn't in the SAME hunk as the
+    # function declaration. This is the safe-direction tradeoff (over-block, bypassable with
+    # `git commit --no-verify`), not a silent miss -- accepted rather than chased further,
+    # since properly handling it would need real Lua-aware "same function body" tracking
+    # (matching `function...end` blocks), well beyond what a hunk-buffering awk script can
+    # do. If this fires on a genuine false positive, verify by eye and use --no-verify.
+    hits=$(git diff --cached -U0 -- "$f" | awk '
+      /^@@/ {
+        if (buf ~ /(^|\n)function M\.tick_[A-Za-z0-9_]+_queues/ && buf !~ /approach_deadline/) print "  (hunk missing approach_deadline)"
+        buf = ""
+        next
+      }
+      /^\+/ && !/^\+\+\+/ {
+        line = $0
+        sub(/^\+/, "", line)
+        buf = buf "\n" line
+      }
+      END {
+        if (buf ~ /(^|\n)function M\.tick_[A-Za-z0-9_]+_queues/ && buf !~ /approach_deadline/) print "  (hunk missing approach_deadline)"
+      }
+    ' || true)
+    if [ -n "$hits" ]; then
+      echo "[pre-commit][BLOCK] $f: new tick_*_queues function added with no"
+      echo "  approach_deadline ADDED in the SAME hunk. Async queues that wait on"
+      echo "  companion movement/approach need a bounded deadline (mirror tick_gather_queues"
+      echo "  / tick_fuel_queues) so a permanently-blocked tile fails instead of hanging"
+      echo "  get_*_status forever."
+      fail=1
+    fi
+  done <<< "$lua_files"
+fi
+
+if [ "$fail" = "1" ]; then
+  echo ""
+  echo "[pre-commit] Blocked by mechanical self-review checks (see CLAUDE.md's"
+  echo "'CHECKLIST PRED KAZDYM COMMITEM' for the full list this only partially automates)."
+  echo "Fix the above, or if it's a deliberate false positive, bypass with:"
+  echo "  git commit --no-verify"
+  exit 1
+fi
+
+# --- 2) Auto-bump mod version (only reached once the checks above passed) ---
+# Portable across GNU/BSD (cubic dev ai bot, 2026-07-05): `grep -oP` is a GNU-only PCRE
+# extension (errors out on BSD/macOS grep), and under `set -e` an unmatched/failing grep
+# here would abort the WHOLE hook before the `[ -n "$ver" ]` guard is ever reached --
+# every other command substitution in this file already uses `|| true` for exactly this
+# reason, this one was the odd one out. `sed -n '...p'` (basic regex, no -P) plus a
+# temp-file+mv instead of `sed -i` (GNU accepts `-i` bare, BSD requires `-i ''`) avoids
+# every GNU-specific flag.
+# `-c core.quotepath=false` + `grep -vxF` (independent Workflow review, 2026-07-05): plain
+# `grep -v "$info"` is an unanchored SUBSTRING match, so e.g. a stray "factorio-mod/info.json.bak"
+# would also get excluded (never trigger the bump) -- `-x` (whole-line) + `-F` (literal, so the
+# '.' in "info.json" isn't a regex any-char wildcard either) makes it an exact-path match.
+changed=$(git -c core.quotepath=false diff --cached --name-only | grep '^factorio-mod/' | grep -vxF "$info" || true)
+if [ -n "$changed" ]; then
+  ver=$(sed -n 's/.*"version": *"\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' "$info" | head -1 || true)
+  if [ -n "$ver" ]; then
+    IFS='.' read -r major minor patch <<< "$ver"
+    # `10#$patch` (2nd independent Workflow review, 2026-07-05): a zero-padded patch like
+    # "08"/"09" is not a valid octal literal, and bash's `$((patch + 1))` treats a
+    # leading-zero number as octal by default -- under `set -e` this arithmetic error does
+    # NOT abort the script (a well-known bash quirk: a failing arithmetic expansion inside a
+    # plain assignment doesn't trigger errexit), it just silently skips the rest of this
+    # block (sed/mv/git add/echo never run) and falls through to the final `exit 0`, so the
+    # commit succeeds with info.json's version left completely unchanged and no clear
+    # message tying the failure to a skipped bump. `10#$patch` forces base-10 interpretation
+    # regardless of leading zeros, sidestepping octal auto-detection entirely.
+    new="$major.$minor.$((10#$patch + 1))"
+    sed "s/\"version\": \"$ver\"/\"version\": \"$new\"/" "$info" > "$info.tmp" && mv "$info.tmp" "$info"
+    git add "$info"
+    echo "[pre-commit] ai-companion version $ver -> $new (mod files changed)"
+  fi
+fi
+
+exit 0
