@@ -253,6 +253,7 @@ try {
   assert.equal(capability.construction_robots.total, 0);
   assert.deepEqual((await game.observe(1)).errors, [], "Wood gathering must not emit tick errors");
   await (await import("./game-blueprints")).testBlueprints(game, rcon);
+  await (await import("./game-walking")).testWalking(game, rcon);
   console.log(
     `Real Factorio ${snapshot.factorio}: spawn, observation, Unicode chat, cursor reads, building, crafting, mining, cancellation and drill-to-furnace production passed.`,
   );

@@ -62,9 +62,20 @@ function M.companion_queue_status(cid)
   return out
 end
 
+local response_sink
+function M.capture_response(callback)
+  local previous, result = response_sink, nil
+  response_sink = function(data) result = data end
+  local ok, err = pcall(callback)
+  response_sink = previous
+  if not ok then return {error=tostring(err)} end
+  return result or {error="Command returned no result"}
+end
+
 function M.json_response(data, cid, is_array)
   if not is_array and data.tick == nil then data.tick = game.tick end
   if cid and data.queues == nil then data.queues = M.companion_queue_status(cid) end
+  if response_sink then response_sink(data); return end
   if is_array and next(data) == nil then rcon.print("[]"); return end
   local ok, result = pcall(helpers.table_to_json, data)
   rcon.print(ok and result or '{"error":"JSON failed"}')

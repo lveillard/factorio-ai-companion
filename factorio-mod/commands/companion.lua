@@ -24,7 +24,7 @@ end)
 
 local STARTING_ITEMS = u.settings.starting_items
 
-u.register("companion_spawn", function(args)
+u.register("companion_spawn", function(args, player)
   u.safe_command(function()
 
     local req_id = args.companionId
@@ -38,7 +38,7 @@ u.register("companion_spawn", function(args)
     elseif req_id >= storage.companion_next_id then storage.companion_next_id = req_id + 1 end
     -- Spawn near a player if one exists, else at the map spawn / origin so the
     -- companion works on a HEADLESS server with no connected player.
-    local p = game.players[1]
+    local p = player or game.players[1]
     local surface = (p and p.valid) and p.surface or game.surfaces[1]
     local force = (p and p.valid) and p.force or game.forces.player
     -- headless (no player): use the force's actual spawn position, not a hardcoded origin

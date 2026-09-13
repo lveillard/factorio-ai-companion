@@ -12,7 +12,7 @@ export interface CommandDefinition {
   effect: "read" | "chat" | "act";
   inputSchema: InputSchema;
   before?: string[];
-  continuation?: "none";
+  continuation?: "none" | "timer";
 }
 export const COMMANDS = definitions as Record<string, CommandDefinition>;
 const validators = new Map(

@@ -15,6 +15,7 @@ const modules = readdirSync(directory)
   )
   .join("\n");
 const fixture = readFileSync(join(PROJECT_ROOT, "tests/fixtures/game.lua"), "utf8");
+const guiFixture = readFileSync(join(PROJECT_ROOT, "tests/fixtures/gui.lua"), "utf8");
 const control = `package.preload["control"] = function(...)\n${readFileSync(join(PROJECT_ROOT, "factorio-mod/control.lua"), "utf8")}\nend`;
 function run(source: string) {
   const state = lauxlib.luaL_newstate();
@@ -490,13 +491,167 @@ test("Lua: walking retargets blocked destinations, replans stalled paths and ret
   assert(#requests==1 and requests[1].goal.x==8)
   path_event{id=1,path={{position={x=8,y=0}}}}
   local q=storage.walking_queues[1]
-  q.last_path_idx=1;q.waypoint_stall_ticks=u.settings.walking.waypoint_stall_repath_ticks
-  game.tick=10;tick{tick=10}
-  game.tick=15;tick{tick=15}
+  for t=10,170,5 do game.tick=t;tick{tick=t} end
   for _,error in ipairs(storage.errors) do assert(error.context~="walking",error.error) end
   assert(#requests==2 and q.path_pending, "a stale waypoint must request a new path")
   entity.position={x=8,y=0}
-  game.tick=20;tick{tick=20}
+  game.tick=175;tick{tick=175}
   assert(not storage.walking_queues[1] and storage.walk_last_arrived[1].x==8)
   for _,error in ipairs(storage.errors) do assert(error.context~="walking",error.error) end
 `));
+
+const walkingFixture = `
+  local init,tick,path_event
+  script={active_mods={["ai-companion"]="test"},on_init=function(fn) init=fn end,
+    on_configuration_changed=function() end,on_event=function(_,fn) path_event=fn end,
+    on_nth_tick=function(_,fn) tick=fn end}
+  commands={add_command=function() end}
+  defines.events={on_script_path_request_finished=1}
+  require("control");init()
+  prototypes.entity.character={collision_box={},collision_mask={}}
+  local requests=0
+  entity.surface.find_entities_filtered=function() return {} end
+  entity.surface.find_non_colliding_position=function(_,pos) return pos end
+  entity.surface.request_path=function() requests=requests+1;return requests end
+  local function step(t) game.tick=t;tick{tick=t} end
+  local function healthy()
+    for _,error in ipairs(storage.errors) do assert(error.context~="walking",error.error) end
+  end
+`;
+
+test("Lua: a long waypoint keeps moving without harvesting neighboring trees or replanning", () =>
+  run(
+    walkingFixture +
+      `
+  local tree={valid=true,type="tree",name="tree-01",position={x=0,y=1},
+    prototype={mineable_properties={products={{type="item",name="wood"}}}}}
+  entity.surface.find_entities_filtered=function() return {tree} end
+  storage.walking_queues[1]={target={x=50,y=0}}
+  step(5);path_event{id=1,path={{position={x=50,y=0}}}}
+  for t=10,500,5 do
+    entity.position.x=entity.position.x+0.35
+    step(t)
+    assert(entity.walking_state.walking and not entity.mining_state.mining)
+  end
+  assert(requests==1, "forward progress on a long waypoint must not trigger a replan")
+  healthy()
+`,
+  ));
+
+test("Lua: mining a modded path obstacle counts as progress and stops on arrival", () =>
+  run(
+    walkingFixture +
+      `
+  local rock={valid=true,type="simple-entity",name="big-rock-cream",position={x=2,y=0},
+    prototype={mineable_properties={products={{type="item",name="stone"}}}}}
+  entity.surface.find_entities_filtered=function() return rock.valid and {rock} or {} end
+  storage.walking_queues[1]={target={x=10,y=0},giveup_enabled=true}
+  step(5);path_event{id=1,path={{position={x=2,y=0},needs_destroy_to_reach=true},{position={x=10,y=0}}}}
+  for t=10,800,5 do
+    entity.mining_progress=t/1000
+    step(t)
+    assert(entity.selected==rock and entity.mining_state.mining)
+  end
+  assert(requests==1 and storage.walking_queues[1], "active mining must not repath or give up")
+  entity.position={x=10,y=0};step(805)
+  assert(not entity.mining_state.mining and not storage.walking_queues[1])
+  healthy()
+`,
+  ));
+
+test("Lua: obsolete path results cannot redirect a replacement walking job", () =>
+  run(
+    walkingFixture +
+      `
+  storage.walking_queues[1]={target={x=50,y=0}};step(5)
+  storage.walking_queues[1]={target={x=0,y=50}};step(10)
+  path_event{id=1,path={{position={x=50,y=0}}}}
+  assert(not storage.walking_queues[1].path and storage.walking_queues[1].path_pending)
+  path_event{id=2,path={{position={x=0,y=50}}}}
+  assert(storage.walking_queues[1].path[1].position.y==50)
+  healthy()
+`,
+  ));
+
+test("Lua: task walking deadlines extend on progress but still expire when stuck", () =>
+  run(`
+  local pool=require("commands.task_pool");pool.init()
+  storage.tasks[1]={cid=1,status="active",steps={{type="place",entity="wooden-chest"}},cursor=1,ctx={},needs={},reserved={}}
+  storage.active_step[1]={task_id=1,state="walking",approach_deadline=5}
+  storage.walking_queues[1]={target={x=10,y=0},last_progress_tick=5}
+  game.tick=5;pool.tick()
+  assert(storage.tasks[1].status=="active" and storage.active_step[1].approach_deadline>5)
+  game.tick=storage.active_step[1].approach_deadline;pool.tick()
+  assert(storage.tasks[1].status=="failed" and not storage.walking_queues[1])
+`));
+
+test("Lua: replanning from the same position does not extend a task's movement deadline", () =>
+  run(
+    walkingFixture +
+      `
+  storage.walking_queues[1]={target={x=50,y=0}}
+  step(5)
+  for attempt=1,4 do
+    local q=storage.walking_queues[1]
+    path_event{id=requests,path={{position={x=50,y=0}}}}
+    for t=1,33 do step(game.tick+5) end
+    assert(not q.last_progress_tick,"A fresh path is not physical progress")
+  end
+  healthy()
+`,
+  ));
+
+test("Lua: overlay routes multiline chat, preserves drafts and survives a vanished recipient", () =>
+  run(
+    guiFixture +
+      `
+  gui.refresh(player)
+  assert(bar().header.target.items[2]=="Atlas #1")
+  bar().header.target.selected_index=2
+  bar().body.fac_message.text="  Build a lab\\nthen check power  "
+  click(bar().body.fac_send)
+  assert(storage.companion_messages[1].target_companion==1)
+  assert(storage.companion_messages[1].message=="Build a lab\\nthen check power")
+  assert(bar().body.fac_message.text=="")
+  click(bar().body.fac_send)
+  assert(#storage.companion_messages==1,"Blank submission must not enqueue a request")
+  bar().body.fac_message.text="Unsent draft";gui.rebuild()
+  assert(bar().body.fac_message.text=="Unsent draft" and bar().header.target.selected_index==2)
+  storage.companions[1]=nil;gui.refresh(player)
+  assert(bar().header.target.selected_index==1 and bar().body.fac_message.text=="Unsent draft")
+  player.display_resolution={width=800,height=600};player.display_scale=1.5
+  handlers[defines.events.on_player_display_resolution_changed]{player_index=1}
+  assert(bar().location.x>=0 and bar().location.x+u.settings.overlay.width*1.5<=800)
+`,
+  ));
+
+test("Lua: overlay controls use validated commands and send a cancellation event to the host", () =>
+  run(
+    guiFixture +
+      `
+  gui.refresh(player);click(bar().header.fac_manage)
+  local calls={}
+  -- Load the production dispatcher with every contract entry present; replace only the actions under test.
+  for name,def in pairs(require("commands.contract")) do
+    if def.execution=="game" and not u.handlers[name] then u.handlers[name]=function() u.json_response{} end end
+  end
+  u.handlers.companion_stop=function(args)
+    calls[#calls+1]=args.companionId
+    require("commands.lifecycle").stop(args.companionId)
+    u.json_response{stopped=true}
+  end
+  storage.walking_queues[1]={target={x=10,y=0}}
+  click(panel().roster.companion_1.action_2)
+  assert(#calls==1 and not storage.walking_queues[1])
+  assert(storage.companion_messages[1].control.tool=="companion_stop")
+  local bad=require("commands.dispatch").call("companion_stop",{companionId=-1})
+  assert(bad.error and #calls==1,"GUI calls must validate the same schema as MCP")
+  u.handlers.companion_spawn=function(args,origin)
+    assert(origin==player and args.companionId==2 and args.name=="Almendra")
+    u.json_response{spawned=true}
+  end
+  panel().create.fac_name.text="Almendra";click(panel().create.fac_spawn)
+  assert(storage.companion_messages[2].control.tool=="companion_spawn")
+  assert(panel().create.fac_name.text=="")
+`,
+  ));

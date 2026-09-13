@@ -155,7 +155,9 @@ test("final game replies retain the addressed companion, including the coordinat
       expect(f.session.status().busy).toBe(false);
       const replies = f.events.recent.filter(
         (event) =>
-          event.type === "tool.started" && (event.data as { name: string }).name === "chat_say",
+          event.type === "tool.started" &&
+          (event.data as { name: string; source: string }).name === "chat_say" &&
+          (event.data as { source: string }).source === "reply",
       );
       expect(replies).toHaveLength(1);
       expect((replies[0]!.data as { args: unknown }).args).toEqual({
@@ -165,6 +167,151 @@ test("final game replies retain the addressed companion, including the coordinat
     } finally {
       await f.close();
     }
+  }
+});
+
+function gameChat(f: ReturnType<typeof fixture>) {
+  return f.events.recent
+    .filter((event) => event.type === "tool.started")
+    .map((event) => event.data as { name: string; source: string; args: unknown })
+    .filter((event) => event.name === "chat_say");
+}
+
+test("web messages reach game chat once; game messages are never echoed", async () => {
+  const f = fixture();
+  try {
+    const snapshot = await f.game.observe();
+    snapshot.companions = [{ id: 2, name: "Almendra" }];
+    const message = f.session.enqueue("Build a lab", 2);
+    await f.session["deliverToGame"](message);
+    await f.session["deliverToGame"](message);
+    const ingame = f.session.enqueue("Mine iron", 1, "game", "Player");
+    await f.session["deliverToGame"](ingame);
+    expect(message.gameDelivery).toBe("sent");
+    expect(gameChat(f)).toEqual([
+      {
+        name: "chat_say",
+        source: "chat-relay",
+        args: { companionId: 0, message: "[Web → Almendra] Build a lab" },
+      },
+    ]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("progress is delivered before turn completion and duplicate notifications are idempotent", async () => {
+  const f = fixture();
+  try {
+    f.session.enqueue("Build a lab", 2);
+    await f.session.resume();
+    const notification = {
+      method: "item/completed",
+      params: {
+        threadId: "thread1",
+        turnId: "turn1",
+        item: {
+          id: "progress1",
+          type: "agentMessage",
+          text: "Gathering copper.",
+          phase: "commentary",
+        },
+      },
+    };
+    await f.session["notification"](notification);
+    await f.session["notification"](notification);
+    const progress = f.session.status().messages.find((message) => message.phase === "progress")!;
+    await f.session["deliverToGame"](progress);
+    expect(f.session.status().busy).toBe(true);
+    expect(progress.gameDelivery).toBe("sent");
+    expect(
+      gameChat(f)
+        .filter((event) => event.source === "reply")
+        .map((event) => event.args),
+    ).toEqual([{ companionId: 2, message: "Gathering copper." }]);
+    await f.session["notification"]({
+      ...notification,
+      params: {
+        ...notification.params,
+        item: {
+          id: "final1",
+          type: "agentMessage",
+          text: "Copper collected.",
+          phase: "final_answer",
+        },
+      },
+    });
+    await complete(f);
+    await complete(f);
+    expect(gameChat(f).filter((event) => event.source === "reply")).toHaveLength(2);
+    expect(
+      f.session.status().messages.filter((message) => message.role === "assistant"),
+    ).toHaveLength(2);
+  } finally {
+    await f.close();
+  }
+});
+
+test("offline chat is delivered after observation; an uncertain failure is never retried", async () => {
+  const f = fixture();
+  try {
+    const pending = f.session.enqueue("Hello", 1);
+    expect(pending.gameDelivery).toBe("pending");
+    expect(gameChat(f)).toHaveLength(0);
+    await f.session["poll"]();
+    expect(pending.gameDelivery).toBe("sent");
+    const execute = f.game.execute.bind(f.game);
+    let attempts = 0;
+    f.game.execute = (name, ...args) =>
+      name === "chat_say"
+        ? (attempts++, Promise.resolve({ success: false, error: "RCON timeout" }))
+        : execute(name, ...args);
+    const failed = f.session.enqueue("Do you hear me?", 1);
+    await f.session["deliverToGame"](failed);
+    await f.session["poll"]();
+    expect(failed.gameDelivery).toBe("failed");
+    expect(failed.deliveryError).toBe("RCON timeout");
+    expect(attempts).toBe(1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("cancelled or previous-world chat is not sent on reconnect", async () => {
+  const f = fixture();
+  try {
+    const cancelled = f.session.enqueue("Cancelled", 1);
+    cancelled.status = "cancelled";
+    const stale = f.session.enqueue("Previous world", 1);
+    stale.gameWorldId = "old-world";
+    await f.game.observe();
+    await f.session["deliverToGame"](cancelled);
+    await f.session["deliverToGame"](stale);
+    expect(gameChat(f)).toHaveLength(0);
+    expect(cancelled.gameDelivery).toBe("failed");
+    expect(stale.gameDelivery).toBe("failed");
+  } finally {
+    await f.close();
+  }
+});
+
+test("model and focus survive restart; new sessions use Terra", async () => {
+  const f = fixture();
+  try {
+    expect(f.session.model).toBe("gpt-5.6-terra");
+    f.session.model = "chosen-model";
+    f.session.focus = 2;
+    const restored = new CompanionSession(
+      f.game,
+      new FakeCodex() as unknown as CodexClient,
+      f.events,
+      f.directory,
+    );
+    expect(restored.model).toBe("chosen-model");
+    expect(restored.focus).toBe(2);
+    await restored.close();
+  } finally {
+    await f.close();
   }
 });
 
@@ -305,6 +452,115 @@ test("manual stop still reaches the game when Codex interruption fails", async (
           e.type === "tool.completed" && (e.data as { name: string }).name === "companion_stop",
       ),
     ).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+test("native UI stop cancels the orchestrator objective without replaying the game action", async () => {
+  const f = fixture();
+  try {
+    await pendingJob(f);
+    const execute = f.game.execute.bind(f.game);
+    f.game.execute = (name, ...args) =>
+      name === "chat_poll"
+        ? Promise.resolve({
+            success: true,
+            data: {
+              cursor: 1,
+              messages: [
+                {
+                  id: 1,
+                  player: "Player",
+                  companionId: 1,
+                  control: { tool: "companion_stop", args: { companionId: 1 } },
+                },
+              ],
+            },
+          })
+        : execute(name, ...args);
+    await f.session["poll"]();
+    await f.session["poll"]();
+    expect(f.session.status().messages[0]!.status).toBe("cancelled");
+    expect(f.session.status().messages).toHaveLength(1);
+    expect(f.events.recent.filter((event) => event.type === "game.control")).toHaveLength(1);
+    expect(
+      f.events.recent.some(
+        (event) =>
+          event.type === "tool.started" &&
+          (event.data as { name: string }).name === "companion_stop",
+      ),
+    ).toBe(false);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a factory wait schedules a later review even without a character queue", async () => {
+  const f = fixture();
+  try {
+    f.session.enqueue("Verify ten more science packs", 0);
+    await f.session.resume();
+    await f.session["request"]({
+      id: "wait1",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread1",
+        turnId: "turn1",
+        namespace: "factorio",
+        tool: "wait",
+        arguments: { milliseconds: 100 },
+      },
+    });
+    await complete(f);
+    const message = f.session.status().messages[0]!;
+    expect(message.status).toBe("waiting");
+    await f.session["poll"]();
+    expect(f.codex.calls.filter((method) => method === "turn/start")).toHaveLength(1);
+    message.reviewAfter = Date.now() - 1;
+    await f.session["poll"]();
+    await f.session.resume();
+    expect(f.codex.calls.filter((method) => method === "turn/start")).toHaveLength(2);
+  } finally {
+    await f.close();
+  }
+});
+
+test("tool budget exhaustion preserves native work and allows a final progress reply", async () => {
+  const f = fixture({ maxToolCalls: 1 });
+  try {
+    const snapshot = await f.game.observe(1);
+    snapshot.companions = [{ id: 1, queues: { gather: { active: true } } }];
+    f.game.observe = async () => snapshot;
+    f.session.enqueue("Mine iron", 1);
+    await f.session.resume();
+    await act(f);
+    await act(f, "companion_stop");
+    expect(f.session.status().enabled).toBe(true);
+    expect(f.session.status().busy).toBe(true);
+    expect(
+      f.events.recent.some(
+        (event) =>
+          event.type === "tool.started" &&
+          (event.data as { name: string }).name === "companion_stop",
+      ),
+    ).toBe(false);
+    await f.session["notification"]({
+      method: "item/completed",
+      params: {
+        threadId: "thread1",
+        turnId: "turn1",
+        item: {
+          type: "agentMessage",
+          phase: "final_answer",
+          text: "Mining continues; I will review the result.",
+        },
+      },
+    });
+    await complete(f);
+    expect(f.session.status().messages[0]!.status).toBe("waiting");
+    expect(f.session.status().messages.at(-1)!.gameDelivery).toBe("sent");
+    expect(f.codex.calls).not.toContain("turn/interrupt");
   } finally {
     await f.close();
   }

@@ -1,4 +1,18 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.18.3
+Date: 2026-09-13
+  Features:
+    - Add movable in-game chat with recipient selection and companion controls for spawning, following, stopping and removal.
+    - Preserve chat drafts and placement; share native controls with the validated MCP command dispatcher.
+    - Mirror web messages and agent progress into Factorio, with explicit delivery status and no duplicate retries.
+    - Persist the selected model and companion; default to Terra and expose turn response/action timings.
+  Bugfixes:
+    - Count actual walking and mining progress before replanning or timing out a task.
+    - Clear obstructing modded rocks without harvesting every nearby tree, and stop clearing on arrival.
+    - Ignore obsolete path results after a walking job is replaced.
+    - Cancel the host objective when an in-game control redirects its companion.
+    - Yield factory waits to scheduled reviews and retain native work when a model reaches its tool budget.
+---------------------------------------------------------------------------------------------------
 Version: 0.18.2
 Date: 2026-09-13
   Bugfixes:

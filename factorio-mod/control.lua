@@ -3,12 +3,14 @@ local lifecycle = require("commands.lifecycle")
 local u = require("commands.init")
 local queues = require("commands.queues")
 local task_pool = require("commands.task_pool")
+local player_input = require("commands.player_input")
+local gui = require("commands.gui")
 
 -- Get version dynamically from mod info
 local MOD_VERSION = script.active_mods["ai-companion"] or "unknown"
 
-local CLEARABLE_ROCK_NAMES = {"big-rock", "big-sand-rock", "huge-rock"}
-
+local resources = require("commands.resource_query")
+local WALK = u.settings.walking
 local WALK_TARGET_WALKABLE_RADIUS = u.settings.walking.target_walkable_radius
 
 local WAYPOINT_STALL_REPATH_TICKS = u.settings.walking.waypoint_stall_repath_ticks
@@ -26,6 +28,7 @@ local function init_storage()
   storage.walk_last_arrived = storage.walk_last_arrived or {}
   queues.init()
   task_pool.init()
+  gui.rebuild()
 end
 
 local function cleanup_messages()
@@ -49,6 +52,12 @@ script.on_configuration_changed(function()
 end)
 
 local subcommands = {}
+
+subcommands.gui = function(player, args)
+  local target = player or (args ~= "" and game.get_player(args))
+  if not target then error("Specify a player to open companion controls") end
+  gui.open(target)
+end
 
 subcommands.spawn = function(player, args)
   local count = math.min(tonumber(args) or 1, 10)
@@ -113,23 +122,23 @@ local function handle_fac(cmd)
     if cmd.player_index and (not player or not player.valid) then return end
     local param = cmd.parameter
     if not param or param == "" then
-      if player then player.print("/fac <msg> | <id> <msg> | spawn | list | kill | clear | name", u.print_color(u.COLORS.system)) end
+      if player then gui.open(player) end
       return
     end
     local first, rest = param:match("^(%S+)%s+(.+)$")
     if first and rest and not subcommands[first] then
       local id, comp = u.find_companion(first)
       if id then
-        table.insert(storage.companion_messages, {player = player and player.name or "server", message = rest, tick = game.tick, target_companion = id})
-        game.print("[" .. (player and player.name or "server") .. " -> " .. u.get_companion_display(id) .. "] " .. rest, u.print_color(comp.color or u.get_companion_color(id)))
+        local _, err = player_input.send(player, rest, id)
+        if err then error(err) end
         return
       end
     end
     local sub, args = param:match("^(%S+)%s*(.*)")
     if subcommands[sub] then subcommands[sub](player, args)
     else
-      table.insert(storage.companion_messages, {player = player and player.name or "server", message = param, tick = game.tick})
-      game.print("[" .. (player and player.name or "server") .. "] " .. param, u.print_color(u.COLORS.player))
+      local _, err = player_input.send(player, param, 0)
+      if err then error(err) end
     end
   end)
   if not ok then u.log_error(err, "fac"); game.print("Error: " .. tostring(err), u.print_color(u.COLORS.error)) end
@@ -197,12 +206,7 @@ local function guard_tick(name, fn, tick)
 end
 
 local function find_clearable_obstacles(surf, pos, radius)
-  local trees = surf.find_entities_filtered{position = pos, radius = radius, type = "tree"}
-  local rocks = surf.find_entities_filtered{position = pos, radius = radius, name = CLEARABLE_ROCK_NAMES}
-  local out = {}
-  for _, e in ipairs(trees) do out[#out + 1] = e end
-  for _, e in ipairs(rocks) do out[#out + 1] = e end
-  return out
+  return resources.within(surf, pos, {type=WALK.obstacle_types,hand_only=true}, radius)
 end
 
 -- Ask the game pathfinder for a route to q.target that goes AROUND large obstacles
@@ -228,6 +232,7 @@ local function request_walk_path(cid, q, e)
   end)
   if ok and id then
     storage.path_requests[id] = cid
+    q.path_request_id = id
     q.path_pending = true
     q.path_req_tick = game.tick
   else
@@ -241,20 +246,13 @@ script.on_event(defines.events.on_script_path_request_finished, function(ev)
   if not cid then return end
   storage.path_requests[ev.id] = nil
   local q = storage.walking_queues and storage.walking_queues[cid]
-  if not q then return end
+  if not q or q.path_request_id ~= ev.id then return end
   q.path_pending = false
   if ev.path and #ev.path > 0 then
     q.path = ev.path           -- array of {position=, needs_destroy_to_reach=}
     q.path_idx = 1
-    for _, wp in ipairs(ev.path) do
-      if wp.needs_destroy_to_reach then
-        u.log_error(string.format(
-          "walking path for companion %d needs_destroy_to_reach near (%.1f,%.1f) -- "
-          .. "NOT currently acted on, character will likely get stuck here", cid,
-          wp.position.x, wp.position.y), "walk_path_needs_destroy")
-        break
-      end
-    end
+    q.progress_distance = nil
+    q.unclearable_path_idx = nil
   else
     q.path = nil               -- no route found / try later -> straight-line fallback
     q.path_failed_tick = game.tick
@@ -300,29 +298,24 @@ local function process_walking_queues()
     end
     local dist = u.distance(e.position, q.target)
 
-    if q.clearing_target and not q.clearing_target.valid then
-      q.clearing_target = nil  -- previous target is gone (fully mined, or otherwise removed)
-    end
-    if q.clearing_target and u.distance(e.position, q.clearing_target.position) > 6 then
+    if q.clearing_target and (not q.clearing_target.valid
+        or u.distance(e.position, q.clearing_target.position) > u.settings.queue_tuning.mining_range) then
       q.clearing_target = nil
-    end
-    if not q.clearing_target then
-      local adjacent = find_clearable_obstacles(e.surface, e.position, 2)
-      if adjacent[1] then
-        q.clearing_target = adjacent[1]
-      end
+      e.mining_state = {mining=false}
+      q.last_progress_tick = game.tick
     end
     if q.clearing_target then
       if e.selected ~= q.clearing_target then
         e.selected = q.clearing_target
-      end
-      if not e.mining_state.mining then
+        e.mining_state = {mining = true, position = q.clearing_target.position}
+      elseif not e.mining_state.mining then
         e.mining_state = {mining = true, position = q.clearing_target.position}
       end
     end
 
     if dist < 2 then
       e.walking_state = {walking = false}
+      if q.clearing_target then e.mining_state = {mining=false}; q.clearing_target = nil end
       if not q.follow_player then
         storage.walk_last_arrived[cid] = {x = q.target.x, y = q.target.y, tick = game.tick}
         storage.walking_queues[cid] = nil
@@ -339,7 +332,7 @@ local function process_walking_queues()
           q.checkpoint_pos = {x = e.position.x, y = e.position.y}
         elseif (q.active_ticks or 0) - q.checkpoint_active_ticks >= 60 then
           local net_moved = u.distance(q.checkpoint_pos, e.position)
-          if net_moved < 0.3 then
+          if net_moved < 0.3 and not (q.last_progress_tick and game.tick-q.last_progress_tick < 60) then
             q.stall_windows = (q.stall_windows or 0) + 1
           else
             q.stall_windows = 0
@@ -353,6 +346,7 @@ local function process_walking_queues()
             }
             storage.walking_queues[cid] = nil
             e.walking_state = {walking = false}
+            if q.clearing_target then e.mining_state = {mining=false} end
             goto skip
           end
         end
@@ -378,24 +372,16 @@ local function process_walking_queues()
         if q.path[q.path_idx] then
           goal = q.path[q.path_idx].position
           if q.path[q.path_idx].needs_destroy_to_reach and not q.clearing_target then
-            local blockers = find_clearable_obstacles(e.surface, goal, 2)
+            local blockers = find_clearable_obstacles(e.surface, goal, WALK.obstacle_search_radius)
             if blockers[1] then
               q.clearing_target = blockers[1]
               e.selected = blockers[1]
               e.mining_state = {mining = true, position = blockers[1].position}
+            elseif q.unclearable_path_idx ~= q.path_idx then
+              q.unclearable_path_idx = q.path_idx
               u.log_error(string.format(
-                "walking path for companion %d needs_destroy_to_reach at (%.1f,%.1f) -- "
-                .. "found %s, clearing it now", cid, goal.x, goal.y, blockers[1].name),
-                "walk_path_clearing")
-            else
-              -- Flagged but no mineable tree/rock found there -- most likely a cliff,
-              -- which needs cliff-explosives (a separate mechanic, not handled here).
-              -- Logged distinctly so this stays a visible, trackable case instead of
-              -- silently stalling with no diagnostic trail.
-              u.log_error(string.format(
-                "walking path for companion %d needs_destroy_to_reach at (%.1f,%.1f) but "
-                .. "no mineable tree/rock found there -- likely a cliff (needs explosives, "
-                .. "not yet handled)", cid, goal.x, goal.y), "walk_path_unclearable")
+                "Companion %d cannot hand-mine the path obstacle at (%.1f,%.1f)",
+                cid, goal.x, goal.y), "walk_path_unclearable")
               u.rare_symptom_save("RARE-WALK-02")
             end
           end
@@ -404,16 +390,20 @@ local function process_walking_queues()
         end
       end
 
-      if q.path and q.path_idx then
-        if q.last_path_idx ~= q.path_idx then
-          q.last_path_idx = q.path_idx
-          q.waypoint_stall_ticks = 0
-        else
-          q.waypoint_stall_ticks = (q.waypoint_stall_ticks or 0) + 5
-        end
-      else
+      local goal_distance = u.distance(e.position, goal)
+      local mining_progress = e.mining_progress or 0
+      local waypoint_changed = q.last_path_idx ~= q.path_idx
+      local progressing = (q.clearing_target and mining_progress ~= (q.mining_progress or 0))
+        or (q.progress_distance and not waypoint_changed and q.progress_distance - goal_distance >= WALK.progress_distance)
+        or (waypoint_changed and q.prev_pos and u.distance(q.prev_pos,e.position) >= WALK.progress_distance)
+      q.mining_progress = mining_progress
+      q.last_path_idx = q.path_idx
+      if progressing then q.last_progress_tick = game.tick end
+      if progressing or q.progress_distance == nil or waypoint_changed then
+        q.progress_distance = goal_distance
         q.waypoint_stall_ticks = 0
-        q.last_path_idx = nil
+      else
+        q.waypoint_stall_ticks = (q.waypoint_stall_ticks or 0) + u.settings.queue_tuning.tick_interval
       end
 
       -- Stuck detection: compare position to previous call
@@ -421,16 +411,10 @@ local function process_walking_queues()
       local moved = prev and u.distance(prev, e.position) or 1
       q.prev_pos = {x = e.position.x, y = e.position.y}
 
-      if moved < 0.3 and not q.clearing_target then
-        local nearby = find_clearable_obstacles(e.surface, e.position, 4)
-        if nearby[1] then
-          q.clearing_target = nearby[1]
-          e.selected = nearby[1]
-          e.mining_state = {mining = true, position = nearby[1].position}
-        end
-      end
-
-      if moved < 0.3 then
+      if q.clearing_target and progressing then
+        q.stuck_ticks = 0
+        q.bypass_ticks = 0
+      elseif moved < 0.3 then
         q.stuck_ticks = (q.stuck_ticks or 0) + 1
       elseif (q.bypass_ticks or 0) == 0 and not q.bypass_just_ended then
         q.stuck_ticks = 0
@@ -438,6 +422,19 @@ local function process_walking_queues()
         q.bypass_attempts = nil
       end
       q.bypass_just_ended = false
+
+      -- Clear natural obstacles only after movement actually stalls, not every nearby tree.
+      if (q.stuck_ticks or 0) >= 4 and not q.clearing_target then
+        for _, obstacle in ipairs(find_clearable_obstacles(e.surface, e.position, WALK.obstacle_search_radius)) do
+          local dx, dy = obstacle.position.x-e.position.x, obstacle.position.y-e.position.y
+          if dx*(goal.x-e.position.x)+dy*(goal.y-e.position.y) >= 0 then
+            q.clearing_target = obstacle
+            e.selected = obstacle
+            e.mining_state = {mining=true,position=obstacle.position}
+            break
+          end
+        end
+      end
 
       local dir_to_target = u.get_direction(e.position, goal)
 
@@ -450,13 +447,15 @@ local function process_walking_queues()
         q.path = nil
         q.path_idx = nil
         q.last_path_idx = nil
+        q.progress_distance = nil
         q.waypoint_stall_ticks = 0
         q.stuck_ticks = 0
         q.bypass_attempts = nil
         q.bypass_side = nil
         q.bypass_ticks = 0
         e.walking_state = {walking = false}
-      elseif (q.bypass_ticks or 0) > 0 then
+        if q.clearing_target then e.mining_state = {mining=false}; q.clearing_target = nil end
+      elseif not q.clearing_target and (q.bypass_ticks or 0) > 0 then
         -- Continue bypass: walk perpendicular to unblock
         if q.bypass_dir then
           e.walking_state = {walking = true, direction = q.bypass_dir}
@@ -468,7 +467,7 @@ local function process_walking_queues()
           -- perpendicular motion isn't yet confirmed genuine forward progress).
           q.bypass_just_ended = true
         end
-      elseif (q.stuck_ticks or 0) >= 4 and (q.bypass_attempts or 0) < 4 then
+      elseif not q.clearing_target and (q.stuck_ticks or 0) >= 4 and (q.bypass_attempts or 0) < 4 then
         q.stuck_ticks = 0
         q.bypass_attempts = (q.bypass_attempts or 0) + 1
         q.bypass_side = ((q.bypass_side or 0) + 1) % 2
@@ -501,6 +500,7 @@ script.on_nth_tick(u.settings.queue_tuning.tick_interval, function(ev)
   if ev.tick % 1800 == 0 then cleanup_messages() end
   -- Update map markers every 30 ticks (0.5 sec)
   if ev.tick % 30 == 0 then update_companion_markers() end
+  if ev.tick % u.settings.overlay.refresh_ticks == 0 then guard_tick("gui", gui.tick, ev.tick) end
   -- Process all tick-based queues (each guarded so one failure can't kill the rest)
   for _, name in ipairs(u.settings.queues) do
     if name ~= "walking" then guard_tick(name, queues["tick_" .. name .. "_queues"], ev.tick) end

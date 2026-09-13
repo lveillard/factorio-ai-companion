@@ -94,11 +94,18 @@ function M.tick()
     local step = t.steps[t.cursor]
 
     if active.state == "walking" then
+      local walking = storage.walking_queues[cid]
+      if walking and walking.last_progress_tick and walking.last_progress_tick > (active.last_walk_progress_tick or 0) then
+        active.last_walk_progress_tick = walking.last_progress_tick
+        active.approach_deadline = math.max(active.approach_deadline or 0,
+          game.tick + u.settings.walking.min_deadline_ticks)
+      end
       if not storage.walking_queues[cid] then
         active.state = "acting"
       elseif active.approach_deadline and game.tick >= active.approach_deadline then
         storage.walking_queues[cid] = nil
         c.entity.walking_state = {walking = false}
+        if walking.clearing_target then c.entity.mining_state = {mining=false} end
         ledger.fail_task(active.task_id, "could not reach step target (walking timed out)")
         storage.active_step[cid] = nil
         goto continue

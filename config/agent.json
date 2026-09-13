@@ -1,4 +1,7 @@
 {
+  "defaults": { "model": "gpt-5.6-terra", "focus": 0 },
+  "chat": { "gameChunkChars": 1500 },
+  "productionReviewMs": 15000,
   "observation": {
     "groupEntityTypes": ["resource", "tree"],
     "positionsPerGroup": 3

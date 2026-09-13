@@ -101,7 +101,9 @@ const time = (value: string) =>
 
 function renderMessages() {
   const messages = state.agent.messages;
-  const signature = messages.map((message) => `${message.id}:${message.status}`).join("|");
+  const signature = messages
+    .map((message) => `${message.id}:${message.status}:${message.gameDelivery}`)
+    .join("|");
   if (signature === messageSignature) return;
   messageSignature = signature;
   const container = $("messages");
@@ -120,10 +122,29 @@ function renderMessages() {
             )?.name || "Codex"
           : message.player || "You",
       ),
-      node("span", message.source === "game" ? "Factorio" : "Panel"),
+      node(
+        "span",
+        message.source === "game"
+          ? "Factorio"
+          : message.gameDelivery === "sent"
+            ? "Panel · Factorio"
+            : "Panel",
+      ),
       node("time", time(message.at)),
     );
     item.append(meta, node("div", message.text, "message-text"));
+    if (message.phase === "progress") meta.append(node("span", "Progress"));
+    if (message.gameDelivery === "pending" || message.gameDelivery === "failed") {
+      item.append(
+        node(
+          "div",
+          message.gameDelivery === "pending"
+            ? "Waiting for Factorio"
+            : `Not delivered to Factorio · ${message.deliveryError || "Connection failed"}`,
+          "message-status",
+        ),
+      );
+    }
     if (message.status && message.status !== "completed") {
       const labels = {
         queued: "Queued",
@@ -180,21 +201,27 @@ function renderState() {
   $("account-detail").textContent = state.agent.account?.email || "Sign in with ChatGPT";
   $("auth-button").textContent = "Settings";
   $("agent-state").textContent = state.agent.busy
-    ? "Working"
+    ? state.agent.activity === "acting"
+      ? "Acting"
+      : "Thinking"
     : state.agent.enabled
       ? state.agent.waiting
-        ? "Working in game"
+        ? state.agent.productionReviewAt
+          ? "Waiting for production"
+          : "Working in game"
         : connected
           ? "Listening"
           : "Waiting for game"
       : "Paused";
   $("agent-detail").textContent =
     state.agent.error ||
-    (state.agent.queued
-      ? `${state.agent.queued} queued`
-      : state.agent.waiting
-        ? "Checking when work finishes"
-        : "");
+    (state.agent.busy && state.agent.activeSince
+      ? `${Math.floor((Date.now() - state.agent.activeSince) / 1000)}s · ${state.agent.model || "Default model"}`
+      : state.agent.queued
+        ? `${state.agent.queued} queued`
+        : state.agent.waiting
+          ? "Checking when work finishes"
+          : "");
   $("resume").textContent = state.agent.enabled ? "Chat active" : "Start chat";
   $<HTMLButtonElement>("resume").disabled = state.agent.enabled;
   $("queue-hint").textContent = state.agent.enabled ? "Enter to send" : "Paused";

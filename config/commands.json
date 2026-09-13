@@ -2339,7 +2339,7 @@
     }
   },
   "wait": {
-    "description": "Wait briefly before inspecting a native asynchronous job",
+    "description": "Wait briefly before inspecting an asynchronous job. In the companion host, also schedule a later production review: call once, then end the turn.",
     "execution": "wait",
     "effect": "read",
     "inputSchema": {
@@ -2354,7 +2354,8 @@
       },
       "required": [],
       "additionalProperties": false
-    }
+    },
+    "continuation": "timer"
   },
   "building_clear_wrong_output": {
     "description": "Unblock a machine by moving unexpected output into the companion inventory. Keep itemName in place; preserve quality and return any items that do not fit.",

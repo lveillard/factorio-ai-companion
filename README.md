@@ -15,6 +15,8 @@ bun run start
 
 Open **http://127.0.0.1:3210**. Open **Settings** to sign in with ChatGPT. **Add companion** creates a character; **Mine**, **Follow me** and **Stop** run directly without model calls. Send a task with **Send & start**, or use `/fac gather iron` and `/fac 1 build a furnace` in Factorio. **Stop all** interrupts Codex and cancels native companion work. Messages received while paused remain queued; a restart starts paused and does not replay interrupted actions.
 
+In Factorio, use the movable chat bar's **To**, message box and **Send**. **Companions** (or `/fac`) opens spawn, follow, stop and remove controls. Web messages and agent progress also appear in game chat. The selected model persists across server restarts; new sessions default to Terra. Factory waits schedule another review instead of keeping the model polling.
+
 Close Factorio completely before editing its configuration: a running game can overwrite external changes when saving its settings. Enable RCON in `config.ini`, under `[other]`:
 
 ```ini
@@ -67,11 +69,11 @@ Set that environment variable to the service token before starting Codex. Codex 
 | --- | --- |
 | `config/commands.json` | Named arguments, bounds, task step schemas, preconditions, MCP/Codex tools, browser forms and generated Lua dispatch contract |
 | `config/settings.ts` | Environment defaults, validation and generated `.env.example` |
-| `config/gameplay.json` | Queue kinds, observation/retention limits and gameplay tuning |
+| `config/gameplay.json` | Queue kinds, observation/retention limits, overlay controls/layout and gameplay tuning |
 | `config/mod.json` + `package.json` | Generated mod metadata and the single release version |
 | `config/harnesses.json` | Modern MCP client switches for the Claude launcher and Codex integration check |
 | `config/dashboard.json` | Companion defaults, mining choices and job labels; form bounds come from the tool contract |
-| `config/agent.json` | Terrain grouping for compact automatic model observations |
+| `config/agent.json` | Model defaults, chat delivery, factory review timing and compact automatic observations |
 
 Run `bun run generate` after changing configuration. Generated Lua and metadata are checked in so the mod can be packaged independently. Do not edit generated files. Lua handlers own game behavior; the dashboard, Codex host and MCP transport all share one serialized `GameBridge`.
 

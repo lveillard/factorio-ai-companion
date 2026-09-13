@@ -1,8 +1,8 @@
-defines = {direction={north=0,east=4,south=8,west=12}, inventory={character_main=1}, shooting={not_shooting=0}, entity_status={working=1}}
+defines = {direction={north=0,northeast=2,east=4,southeast=6,south=8,southwest=10,west=12,northwest=14}, inventory={character_main=1}, shooting={not_shooting=0}, entity_status={working=1}}
 -- Fengari's Lua 5.3 atan(y, x) supplies Factorio's Lua 5.2 atan2.
 math.atan2 = math.atan
 storage = {companions={}, walking_queues={}, tasks={}, reserved={}, active_step={}, path_requests={}, errors={}}
-game = {tick=0, print=function() end, forces={}, surfaces={}}
+game = {tick=0, print=function() end, forces={}, surfaces={},players={},connected_players={}}
 prototypes = {recipe={gear={energy=0.5,category="crafting",ingredients={}}}, entity={
   ore={type="resource",mineable_properties={products={{type="item",name="ore"}}}}
 }}
@@ -20,6 +20,7 @@ entity = {valid=true, position={x=0,y=0}, crafting_queue={}, crafting_queue_size
   prototype={crafting_categories={crafting=true}},
   force={recipes={gear={enabled=true}}, technologies={}}, surface={}}
 entity.surface.find_logistic_networks_by_construction_area=function() return {} end
+entity.force.add_chart_tag=function() return {valid=true,destroy=function() end} end
 entity.get_main_inventory = function() return inventory end
 entity.get_inventory = function() return inventory end
 entity.get_craftable_count = function() return math.floor(items.plate/2) end

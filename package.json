@@ -20,7 +20,7 @@
     "@openai/codex": "0.154.0",
     "zod": "4.3.5"
   },
-  "version": "0.18.2",
+  "version": "0.18.3",
   "scripts": {
     "dev": "bun scripts/dev.ts",
     "start": "bun src/dashboard/main.ts",

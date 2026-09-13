@@ -113,6 +113,7 @@ end)
 u.register("chat_poll", function(args)
   u.safe_command(function()
     local after = tonumber(args.afterId) or 0
+    storage.bridge_last_poll_tick = game.tick
     storage.bridge_message_id = storage.bridge_message_id or 0
     local messages = {}
     for _, message in ipairs(storage.companion_messages or {}) do
@@ -122,7 +123,8 @@ u.register("chat_poll", function(args)
       end
       if message.bridge_id > after then
         messages[#messages + 1] = {id = message.bridge_id, player = message.player, message = message.message,
-          tick = message.tick, companionId = message.target_companion or 0, spawn_request = message.spawn_request}
+          tick = message.tick, companionId = message.target_companion or 0, spawn_request = message.spawn_request,
+          control = message.control}
       end
     end
     u.json_response({session_id = M.session_id(), cursor = storage.bridge_message_id, messages = messages})
