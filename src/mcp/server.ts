@@ -16,7 +16,7 @@ export function createMCPServer(game: GameBridge): McpServer {
         annotations: {
           readOnlyHint: definition.effect === "read",
           destructiveHint: definition.effect === "act",
-          openWorldHint: false,
+          openWorldHint: definition.effect === "report",
         },
       },
       async (args) => {

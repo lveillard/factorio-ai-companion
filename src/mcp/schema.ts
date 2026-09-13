@@ -8,8 +8,8 @@ export type InputSchema = {
 };
 export interface CommandDefinition {
   description: string;
-  execution: "game" | "session" | "wait";
-  effect: "read" | "chat" | "act";
+  execution: "game" | "session" | "wait" | "feedback";
+  effect: "read" | "chat" | "act" | "report";
   inputSchema: InputSchema;
   before?: string[];
   continuation?: "none" | "timer";

@@ -12,6 +12,8 @@ services:
       FACTORIO_HOST: ${FACTORIO_HOST:-host.docker.internal}
       FACTORIO_RCON_PORT: ${FACTORIO_RCON_PORT:-34198}
       FACTORIO_RCON_PASSWORD: ${FACTORIO_RCON_PASSWORD:-factorio}
+      FEEDBACK_GITHUB_REPOSITORY: ${FEEDBACK_GITHUB_REPOSITORY:-}
+      FEEDBACK_GITHUB_TOKEN: ${FEEDBACK_GITHUB_TOKEN:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

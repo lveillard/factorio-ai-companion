@@ -8,6 +8,7 @@ import { readSettings } from "../config/settings";
 import { LOCAL_DIR } from "../src/config";
 import { EventLog } from "../src/runtime/events";
 import { GameBridge } from "../src/runtime/game";
+import { FeedbackStore } from "../src/runtime/feedback";
 import { CompanionSession } from "../src/runtime/session";
 import { CodexClient } from "../src/codex/client";
 import type { RCONClient } from "../src/rcon/client";
@@ -59,7 +60,8 @@ const rcon = {
     return { success: true, data: JSON.stringify(result) };
   },
 } as unknown as RCONClient;
-const game = new GameBridge(rcon, events);
+const feedback = new FeedbackStore(readSettings({ COMPANION_DATA_DIR: directory }), events);
+const game = new GameBridge(rcon, events, feedback);
 game.snapshot = {
   version: pkg.version,
   factorio: "2.0.77",
@@ -169,6 +171,24 @@ try {
   await expect(page.getByRole("log").getByText("Cancelled", { exact: true })).toBeVisible();
   assert.equal(session.status().queued, 0, "Stop must discard queued work for the companion");
   await page.screenshot({ path: join(artifacts, "desktop.png"), fullPage: true });
+  feedback.report(
+    {
+      key: "web-fixture",
+      title: "Feedback fixture",
+      category: "friction",
+      expected: "Show report evidence",
+      actual: "A deterministic browser fixture",
+      reproduction: "Open Feedback",
+    },
+    game.snapshot,
+  );
+  await page.locator('[data-tab="feedback"]').click();
+  await expect(page.locator("#feedback-reports")).toContainText("Feedback fixture");
+  await page.locator(".feedback-report summary").click();
+  await expect(page.locator(".feedback-evidence")).toContainText("Show report evidence");
+  await expect(page.locator("#sync-feedback")).toBeDisabled();
+  await page.screenshot({ path: join(artifacts, "feedback.png"), fullPage: true });
+  await page.locator('[data-tab="chat"]').click();
   await page.locator("#advanced > summary").click();
   await page.getByText("Manual tools", { exact: true }).click();
   await page.locator("#tool-select").selectOption("session_status");
@@ -206,7 +226,7 @@ try {
   await expect(page.getByRole("button", { name: "+ Add companion" })).toBeEnabled();
   assert.deepEqual(errors, []);
   console.log(
-    `Browser smoke passed: companion creation/error recovery, mining, follow, stop, chat resume, manual tools, settings, activity, offline and mobile layout. Screenshots: ${artifacts}`,
+    `Browser smoke passed: companion creation/error recovery, mining, follow, stop, chat resume, feedback evidence, manual tools, settings, activity, offline and mobile layout. Screenshots: ${artifacts}`,
   );
 } finally {
   await browser.close();

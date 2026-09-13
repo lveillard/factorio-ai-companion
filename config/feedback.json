@@ -1,0 +1,9 @@
+{
+  "maxReports": 1000,
+  "recentFailures": 5,
+  "requestTimeoutMs": 10000,
+  "leaseMs": 60000,
+  "maxIssuePages": 100,
+  "maxCreatesPerSync": 3,
+  "issueTitlePrefix": "[Companion feedback] "
+}

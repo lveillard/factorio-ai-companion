@@ -4,8 +4,15 @@ import { RCONClient } from "./rcon/client";
 import { getRCONConfig } from "./config";
 import { GameBridge } from "./runtime/game";
 import { EventLog } from "./runtime/events";
+import { FeedbackStore } from "./runtime/feedback";
+import { readSettings } from "../config/settings";
 
-const game = new GameBridge(new RCONClient(getRCONConfig()), new EventLog());
+const events = new EventLog();
+const game = new GameBridge(
+  new RCONClient(getRCONConfig()),
+  events,
+  new FeedbackStore(readSettings(), events),
+);
 const server = await serveStdio(() => createMCPServer(game), { legacy: "reject" });
 const close = async () => {
   await server.close();

@@ -49,7 +49,17 @@
             ><button data-tab="logs" aria-selected="false">
               Activity <span id="log-count">0</span>
             </button>
+            <button data-tab="feedback" role="tab" aria-selected="false">
+              Feedback <span id="feedback-count">0</span>
+            </button>
           </nav>
+          <div id="tab-feedback" class="tab-content" hidden>
+            <div class="log-toolbar">
+              <span id="feedback-destination" class="muted"></span
+              ><button id="sync-feedback" class="quiet">Sync GitHub</button>
+            </div>
+            <div id="feedback-reports"></div>
+          </div>
           <div id="tab-chat" class="tab-content">
             <div id="messages" role="log" aria-label="Conversation">
               <div class="empty-state">

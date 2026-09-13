@@ -2,6 +2,7 @@ import { RCONClient } from "../rcon/client";
 import { buildRCONCommand, generateToolSchemas, validateToolArgs } from "../mcp/schema";
 import { COMMANDS } from "../mcp/schema";
 import type { EventLog } from "./events";
+import type { FeedbackStore } from "./feedback";
 
 export interface ToolResult {
   success: boolean;
@@ -41,6 +42,7 @@ export class GameBridge {
   constructor(
     readonly rcon: RCONClient,
     private readonly events: EventLog,
+    readonly feedback?: FeedbackStore,
   ) {}
 
   execute(
@@ -49,6 +51,22 @@ export class GameBridge {
     source = "manual",
     allowed: () => boolean = () => true,
   ): Promise<ToolResult> {
+    if (COMMANDS[name]?.execution === "feedback") {
+      try {
+        if (!allowed()) throw new Error("Action cancelled before execution");
+        if (!this.feedback) throw new Error("Feedback storage unavailable");
+        const data =
+          COMMANDS[name].effect === "report"
+            ? this.feedback.report(raw, this.snapshot)
+            : this.feedback.list(raw);
+        return Promise.resolve({ success: true, data });
+      } catch (error) {
+        return Promise.resolve({
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     const operation = this.serial.then(async () => {
       if (!allowed()) return { success: false, error: "Action cancelled before execution" };
       const started = Date.now();
@@ -145,5 +163,6 @@ export class GameBridge {
 
   async close(): Promise<void> {
     await this.rcon.disconnect();
+    await this.feedback?.close();
   }
 }

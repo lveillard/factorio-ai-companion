@@ -1,6 +1,7 @@
 import type { CompanionSession } from "../../runtime/session";
 import type { GameBridge, WorldSnapshot } from "../../runtime/game";
 import type { AppEvent } from "../../runtime/events";
+import type { FeedbackStore } from "../../runtime/feedback";
 import ui from "../../../config/dashboard.json";
 
 type Entity = {
@@ -18,6 +19,7 @@ type State = {
   tools: GameBridge["schemas"];
   rcon: { host: string; port: number };
   mcp: { url: string; protocol: string };
+  feedback: ReturnType<FeedbackStore["list"]>;
 };
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 const node = <K extends keyof HTMLElementTagNameMap>(
@@ -166,8 +168,68 @@ function renderMessages() {
   if (nearBottom) container.scrollTop = container.scrollHeight;
 }
 
+let feedbackSignature = "";
+function renderFeedback() {
+  const feedback = state.feedback;
+  const signature = JSON.stringify(feedback);
+  if (signature === feedbackSignature) return;
+  feedbackSignature = signature;
+  $("feedback-count").textContent = String(feedback.reports.length);
+  $("feedback-destination").textContent = feedback.repository || "Saved locally";
+  $<HTMLButtonElement>("sync-feedback").disabled = !feedback.repository;
+  const container = $("feedback-reports");
+  container.replaceChildren();
+  if (!feedback.reports.length) container.append(node("p", "No feedback yet.", "muted"));
+  for (const report of feedback.reports) {
+    const card = node("details", undefined, "feedback-report");
+    card.append(
+      node("summary", report.title),
+      node(
+        "p",
+        `${report.category} · ${report.state} · ${report.occurrences} occurrence${report.occurrences === 1 ? "" : "s"}${report.pending && feedback.repository ? " · Sync pending" : ""}`,
+        "muted",
+      ),
+    );
+    if (report.url) {
+      const link = node("a", "View issue ↗");
+      link.href = report.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      card.append(link);
+    }
+    if (report.error) card.append(node("p", report.error));
+    const evidence = node("div", undefined, "feedback-evidence");
+    card.append(evidence);
+    card.addEventListener("toggle", () => {
+      if (card.open && !evidence.textContent) {
+        evidence.textContent = "Loading…";
+        void tool("feedback_list", { key: report.key })
+          .then((result) => {
+            const full = (result as State["feedback"]).reports[0];
+            evidence.replaceChildren();
+            const fields = node("dl");
+            for (const [name, value] of Object.entries(full?.details || {}))
+              fields.append(node("dt", itemName(name)), node("dd", String(value)));
+            const context = node("details");
+            context.append(node("summary", "Diagnostics"), node("pre", pretty(full?.context)));
+            evidence.append(fields, context);
+          })
+          .catch((error) => {
+            evidence.textContent = String(error);
+          });
+      }
+    });
+    container.append(card);
+  }
+}
+action("sync-feedback", async () => {
+  state.feedback = await api<State["feedback"]>("feedback/sync", {});
+  feedbackSignature = "";
+});
+
 function renderState() {
   if (!state) return;
+  renderFeedback();
   if (!state.agent.busy) {
     live.clear();
     $("live-response").hidden = true;
@@ -558,6 +620,8 @@ function connectEvents() {
       live.set(id, (live.get(id) || "") + String(value.delta));
       $("live-response").hidden = false;
       $("live-response").textContent = [...live.values()].join("\n\n").slice(-8000);
+    } else if (event.type === "feedback.changed") {
+      void refresh().catch((error) => notice(String(error)));
     } else if (event.type === "chat") {
       if (value.role === "assistant") {
         live.clear();
