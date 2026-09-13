@@ -1,4 +1,16 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.18.2
+Date: 2026-09-13
+  Bugfixes:
+    - Inspect drills and other non-crafting entities without calling crafting-only APIs.
+    - Stop reporting drill fuel as machine output.
+    - Keep launcher RCON settings outside Steam's synced configuration.
+  Features:
+    - Share machine observations between the map and building_info, including drill targets, discharge positions and crafting production counters.
+    - Show connection guidance and mark the map stale while disconnected.
+  Changes:
+    - Cover machine inspection and real drill-to-furnace production in regression tests.
+---------------------------------------------------------------------------------------------------
 Version: 0.18.1
 Date: 2026-09-13
   Bugfixes:

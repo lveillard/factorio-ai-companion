@@ -207,8 +207,34 @@ try {
   assert.equal((await call("task_status", { taskId: a.task_id })).status, "cancelled");
   assert.equal((await call("task_status", { taskId: b.task_id })).status, "cancelled");
   assert.deepEqual((await game.observe(1)).errors, [], "No Lua task failures");
+  const machineFixture = await rcon.sendCommand(
+    '/sc local s=game.surfaces[1]; for _,p in pairs{{7.5,-0.5},{8.5,-0.5},{7.5,0.5},{8.5,0.5}} do s.create_entity{name="iron-ore",position=p,amount=1000} end; local d=s.create_entity{name="burner-mining-drill",position={8,0},direction=defines.direction.south,force="player"}; local f=s.create_entity{name="stone-furnace",position={8,2},force="player"}; d.get_fuel_inventory().insert{name="coal",count=5}; f.get_fuel_inventory().insert{name="coal",count=5}; rcon.print("machine-fixture-ready")',
+  );
+  assert.match(machineFixture.data, /machine-fixture-ready/);
+  await until(
+    async () =>
+      (await call("building_info", { companionId: 1, x: 8, y: 2 })).entity.products_finished >= 1,
+  );
+  const drill = (await call("building_info", { companionId: 1, x: 8, y: 0 })).entity;
+  assert.equal(drill.facing, "south");
+  assert.equal(drill.output, undefined, "Drill fuel must never be labeled as production");
+  assert.equal(drill.input, undefined, "Drill must not use a crafting inventory index");
+  assert.ok(drill.fuel.some((item: any) => item.name === "coal"));
+  assert.equal(drill.drop_target?.name, "stone-furnace");
+  assert.equal(drill.mining_target?.name, "iron-ore");
+  const detailed = (await game.observe(1)).entities as any[];
+  const observedDrill = detailed.find(
+    (e) => e.name === "burner-mining-drill" && e.position.x === 8,
+  );
+  assert.equal(observedDrill.output, undefined);
+  assert.deepEqual(observedDrill.drop_position, drill.drop_position);
+  assert.deepEqual(
+    (await game.observe(1)).errors,
+    [],
+    "Machine inspection must not emit Lua errors",
+  );
   console.log(
-    `Real Factorio ${snapshot.factorio}: spawn, observation, Unicode chat, cursor reads, building, crafting, mining and cancellation passed.`,
+    `Real Factorio ${snapshot.factorio}: spawn, observation, Unicode chat, cursor reads, building, crafting, mining, cancellation and drill-to-furnace production passed.`,
   );
 } catch (error) {
   writeFileSync(join(root, "process.log"), output);

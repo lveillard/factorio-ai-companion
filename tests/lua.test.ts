@@ -133,6 +133,45 @@ test("Lua: belt pathfinding avoids occupied tiles and reports blocked endpoints"
   assert(not blocked and reason=="dest-blocked")
 `));
 
+test("Lua: drill inspection never treats fuel as output or calls crafting-only APIs", () =>
+  run(`
+  local fuel={valid=true,get_contents=function() return {{name="coal",count=4,quality="normal"}} end}
+  local drill={valid=true,type="mining-drill",name="burner-mining-drill",position={x=1,y=0},
+    direction=defines.direction.south,force={name="player"},status=defines.entity_status.working,
+    get_fuel_inventory=function() return fuel end,
+    get_output_inventory=function() error("Fuel inventory alias must not be read as output") end,
+    get_inventory=function() error("Drill has no crafting input") end,
+    get_recipe=function() error("Entity is not crafting-machine.") end,
+    mining_target={valid=true,name="iron-ore",type="resource",position={x=1,y=0}},
+    mining_progress=0.5,drop_position={x=0.5,y=1.5},
+    drop_target={valid=true,name="stone-furnace",type="furnace",position={x=1,y=2}}}
+  entity.surface.find_entities_filtered=function() return {drill} end
+  local result; u.json_response=function(value) result=value end
+  require("commands.building")
+  u.handlers.building_info{companionId=1,x=1,y=0}
+  assert(not result.error and result.entity.name=="burner-mining-drill")
+  local info=result.entity
+  assert(info.output==nil and info.input==nil and info.recipe==nil)
+  assert(info.fuel[1].count==4 and info.facing=="south")
+  assert(info.drop_target.name=="stone-furnace" and info.mining_target.name=="iron-ore")
+  local observed=require("commands.entity_info").describe(drill,true)
+  assert(observed.drop_position.y==info.drop_position.y and observed.output==nil)
+`));
+
+test("Lua: shared machine inspection exposes real crafting output and production counters", () =>
+  run(`
+  defines.inventory.crafter_input=2
+  local output={valid=true,get_contents=function() return {{name="iron-plate",count=8,quality="uncommon"}} end}
+  local machine={name="stone-furnace",type="furnace",position={x=1,y=0},direction=0,
+    force={name="player"},status=1,get_fuel_inventory=function() return nil end,
+    get_inventory=function(slot) assert(slot==2); return nil end,
+    get_output_inventory=function() return output end,get_recipe=function() return {name="iron-plate"} end,
+    products_finished=31,crafting_progress=0.25}
+  local info=require("commands.entity_info").describe(machine,true)
+  assert(info.recipe=="iron-plate" and info.products_finished==31)
+  assert(info.output[1].quality=="uncommon" and info.crafting_progress==0.25)
+`));
+
 test("Lua: mining with a stuck selection changes tile without reporting completion", () =>
   run(`
   entity.surface.find_non_colliding_position=function() return nil end

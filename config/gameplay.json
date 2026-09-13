@@ -24,6 +24,17 @@
     "errors": 10,
     "vision_radius": 32
   },
+  "entity_capabilities": {
+    "assembling-machine": { "crafting": true },
+    "furnace": { "crafting": true },
+    "rocket-silo": { "crafting": true },
+    "container": { "inventory": "chest" },
+    "logistic-container": { "inventory": "chest" },
+    "linked-container": { "inventory": "chest" },
+    "cargo-wagon": { "inventory": "cargo_wagon" },
+    "mining-drill": { "mining": true, "drop": true },
+    "inserter": { "inserter": true, "drop": true }
+  },
   "retention": {
     "chat_messages": 100,
     "errors": 50,

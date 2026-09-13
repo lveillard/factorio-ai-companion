@@ -1,4 +1,5 @@
 local u = require("commands.init")
+local entity_info = require("commands.entity_info")
 local M = {}
 local limits = u.settings.observation
 
@@ -10,28 +11,6 @@ function M.session_id()
     storage.bridge_session_id = tostring(game.tick) .. ":" .. tostring(math.random(1, 2147483647))
   end
   return storage.bridge_session_id
-end
-
-local statuses = {}
-for name, value in pairs(defines.entity_status) do statuses[value] = name end
-
-local function machine(e, detailed)
-  local result = {name = e.name, type = e.type, position = position(e.position), direction = e.direction,
-    force = e.force.name, health = e.health, max_health = e.max_health, status = statuses[e.status]}
-  if e.type == "resource" then result.amount = e.amount end
-  if detailed and e.force.name ~= "neutral" then
-    result.input = contents(e.get_inventory(defines.inventory.crafter_input))
-    result.output = contents(e.get_output_inventory())
-    result.fuel = contents(e.get_fuel_inventory())
-    if e.type == "container" or e.type == "logistic-container" then result.inventory = contents(e.get_inventory(defines.inventory.chest)) end
-    if e.type == "assembling-machine" or e.type == "furnace" then
-      local recipe = e.get_recipe()
-      result.recipe = recipe and recipe.name
-      result.crafting_progress = e.crafting_progress
-    end
-    result.energy = e.energy
-  end
-  return result
 end
 
 local function queues(cid)
@@ -112,7 +91,7 @@ u.register("world_observe", function(args)
     for i = 1, math.min(limits.entities, #visible) do
       local e = visible[i]
       local detailed = e.force == force and e.type ~= "character" and detail < limits.detailed_machines
-      local ok, data = pcall(machine, e, detailed)
+      local ok, data = pcall(entity_info.describe, e, detailed)
       if ok then result.entities[#result.entities + 1] = data; if detailed then detail = detail + 1 end
       else result.errors[#result.errors + 1] = {context = "observation:" .. e.name, error = tostring(data), tick = game.tick} end
     end

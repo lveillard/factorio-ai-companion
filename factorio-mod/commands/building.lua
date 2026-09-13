@@ -1,5 +1,6 @@
 local u = require("commands.init")
 local queues = require("commands.queues")
+local entity_info = require("commands.entity_info")
 
 u.register("building_can_place", function(args)
   u.safe_command(function()
@@ -142,11 +143,7 @@ u.register("building_info", function(args)
       end
     end
     if not t then u.json_response({id = id, error = "Not found"}); return end
-    local info = {name = t.name, type = t.type, position = {x = t.position.x, y = t.position.y}, direction = t.direction}
-    if t.health then info.health = t.health end
-    if t.energy then info.energy = t.energy end
-    if t.get_recipe then local r = t.get_recipe(); if r then info.recipe = r.name end end
-    u.json_response({id = id, entity = info})
+    u.json_response({id = id, entity = entity_info.describe(t, true)})
   end)
 end)
 
