@@ -1,0 +1,12 @@
+.git
+.claude
+.local
+.env
+.env.*
+!.env.example
+node_modules
+dist
+coverage
+*.log
+*.zip
+nul

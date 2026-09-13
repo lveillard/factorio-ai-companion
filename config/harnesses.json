@@ -1,0 +1,13 @@
+{
+  "claude": {
+    "env": {
+      "MCP_SDK_GENERATION": "v2",
+      "MCP_PROTOCOL_NEGOTIATION": "auto"
+    }
+  },
+  "codex": {
+    "features": {
+      "mcp_2026_07_28": true
+    }
+  }
+}

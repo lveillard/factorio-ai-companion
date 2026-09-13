@@ -1,20 +1,47 @@
 {
   "name": "factorio-ai-companion",
-  "module": "index.ts",
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest",
-    "@types/node": "^25.0.9",
-    "@types/node-notifier": "^8.0.5",
-    "lefthook": "^2.0.15"
-  },
-  "peerDependencies": {
-    "typescript": "^5.9.3"
+    "@modelcontextprotocol/client": "2.0.0",
+    "@playwright/test": "1.63.0",
+    "@types/bun": "1.3.6",
+    "@types/luaparse": "0.2.13",
+    "@types/node": "25.0.9",
+    "fengari": "0.1.5",
+    "fflate": "0.8.3",
+    "lefthook": "2.1.12",
+    "luaparse": "0.3.1",
+    "prettier": "3.9.6",
+    "typescript": "5.9.3"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.25.2",
-    "node-notifier": "^10.0.1",
-    "zod": "^4.3.5"
+    "@modelcontextprotocol/server": "2.0.0",
+    "@openai/codex": "0.154.0",
+    "zod": "4.3.5"
+  },
+  "version": "0.18.3",
+  "scripts": {
+    "dev": "bun scripts/dev.ts",
+    "start": "bun src/dashboard/main.ts",
+    "mcp": "bun src/index.ts",
+    "claude": "bun scripts/claude.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "validate": "bun scripts/validate-tools.ts",
+    "check": "bun run typecheck && bun run validate && bun test",
+    "build": "bun scripts/build.ts",
+    "doctor": "bun scripts/doctor.ts",
+    "mod:install": "bun scripts/install-mod.ts",
+    "test:game": "bun scripts/test-game.ts",
+    "codex:smoke": "bun scripts/test-codex.ts",
+    "generate": "bun scripts/generate.ts",
+    "mod:package": "bun scripts/package-mod.ts",
+    "mod:publish": "bun scripts/publish-mod.ts",
+    "test:web": "bun scripts/test-web.ts",
+    "format": "prettier --write \"src/**/*.ts\" \"src/dashboard/web/*.{html,css}\" \"scripts/*.ts\" \"tests/*.ts\" \"config/settings.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"src/dashboard/web/*.{html,css}\" \"scripts/*.ts\" \"tests/*.ts\" \"config/settings.ts\"",
+    "test:docker": "bun scripts/test-docker.ts",
+    "game:launch": "bun scripts/launch-game.ts"
   }
 }

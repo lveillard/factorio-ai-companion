@@ -1,12 +1,17 @@
-import { FactorioMCPServer } from "./mcp/server";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import { createMCPServer } from "./mcp/server";
+import { RCONClient } from "./rcon/client";
+import { getRCONConfig } from "./config";
+import { GameBridge } from "./runtime/game";
+import { EventLog } from "./runtime/events";
 
-const server = new FactorioMCPServer({
-  host: process.env.FACTORIO_HOST || "127.0.0.1",
-  port: parseInt(process.env.FACTORIO_RCON_PORT || "34198"),
-  password: process.env.FACTORIO_RCON_PASSWORD || "factorio",
-});
-
-server.start().catch((error) => {
-  console.error("Failed to start server:", error);
-  process.exit(1);
-});
+const game = new GameBridge(new RCONClient(getRCONConfig()), new EventLog());
+const server = await serveStdio(() => createMCPServer(game), { legacy: "reject" });
+const close = async () => {
+  await server.close();
+  await game.close();
+  process.exit(0);
+};
+process.on("SIGINT", close);
+process.on("SIGTERM", close);
+process.stdin.on("end", close);

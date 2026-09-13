@@ -1,0 +1,24 @@
+{
+  "defaultCompanionName": "Atlas",
+  "mining": {
+    "defaultCount": 50,
+    "resources": [
+      "iron-ore",
+      "copper-ore",
+      "coal",
+      "stone",
+      "wood"
+    ]
+  },
+  "jobs": {
+    "walking": "Walking",
+    "gather": "Mining",
+    "harvest": "Mining",
+    "craft": "Crafting",
+    "build": "Building",
+    "fuel": "Refueling",
+    "belt": "Laying belts",
+    "combat": "In combat",
+    "blueprint": "Building blueprint"
+  }
+}

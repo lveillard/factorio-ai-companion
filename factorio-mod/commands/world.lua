@@ -1,15 +1,12 @@
--- AI Companion v0.7.0 - World commands
 local u = require("commands.init")
 
-local normalize = {copper = "copper-ore", iron = "iron-ore", coal = "coal", stone = "stone", uranium = "uranium-ore"}
 
-commands.add_command("fac_world_nearest", nil, function(cmd)
+u.register("world_nearest", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s+(%S+)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local what = args[2]
-    local name = normalize[what] or what
+    local what = args.entityName
+    local name = what
     local pos = c.entity.position
     local surf = c.entity.surface
     local area = {{pos.x - 200, pos.y - 200}, {pos.x + 200, pos.y + 200}}
@@ -30,13 +27,12 @@ commands.add_command("fac_world_nearest", nil, function(cmd)
   end)
 end)
 
-commands.add_command("fac_world_scan", nil, function(cmd)
+u.register("world_scan", function(args)
   u.safe_command(function()
-    local args = u.parse_args("^(%S+)%s*(%d*)%s*(%S*)$", cmd.parameter)
-    local id, c = u.find_companion(args[1])
+    local id, c = u.find_companion(args.companionId)
     if not id then u.not_found(); return end
-    local radius = tonumber(args[2]) or 10
-    local filter = args[3] ~= "" and args[3] or nil
+    local radius = tonumber(args.radius) or 10
+    local filter = args.entityType ~= "" and args.entityType or nil
     local search = {position = c.entity.position, radius = radius}
     if filter then search.name = filter end
     local es = c.entity.surface.find_entities_filtered(search)
