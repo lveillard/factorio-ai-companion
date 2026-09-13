@@ -24,7 +24,7 @@ local-rcon-password=factorio
 
 Restart Factorio and host a multiplayer game. For a headless server, use `--rcon-port 34198 --rcon-password YOUR_PASSWORD`. Copy `.env.example` to `.env` to change the bridge's host, port and matching password. `bun run doctor` locates your game/mod directory and reports configuration without printing secrets.
 
-On a local setup, `bun run game:launch` backs up this config, applies the matching loopback RCON settings and opens Factorio. It refuses to change the config while Factorio is running. RCON requires hosting multiplayer; you can host a private local game and play alone with companions. The single-player menu mode does not expose this connection.
+On a local setup, `bun run game:launch` creates a launch profile at `.local/game/config.ini` from your existing settings, applies loopback RCON and opens Factorio. The profile stays outside Steam's synced configuration; mods and saves use your existing game directory. Later launches preserve changes made in this profile and refresh RCON from `.env`. The launcher refuses to run while Factorio is open. RCON requires hosting multiplayer; you can host a private local game and play alone with companions. The single-player menu mode does not expose this connection.
 
 `mod:install` backs up the previous companion mod and mod list under `.local/mod-backups`, then installs a fresh copy. Saves and other mods are preserved. `bun run mod:package` writes the versioned mod ZIP to `dist/`.
 

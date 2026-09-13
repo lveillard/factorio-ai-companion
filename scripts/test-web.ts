@@ -120,6 +120,8 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(app.url);
   await expect(page.locator("#surface")).toHaveText("nauvis");
+  await expect(page.locator("#connection-notice")).toBeHidden();
+  await expect(page.locator("#map-empty")).toBeHidden();
   assert.equal(await page.locator("html").getAttribute("lang"), "en");
   await page.getByRole("button", { name: "+ Add companion" }).click();
   await page.getByLabel("Name", { exact: true }).fill("Atlas");
@@ -190,8 +192,18 @@ try {
   await page.screenshot({ path: join(artifacts, "mobile.png"), fullPage: true });
   connected = false;
   events.emit("game.disconnected", { error: "Game closed" });
+  await expect(page.locator("#connection-notice")).toContainText("host a multiplayer game");
+  await expect(page.locator("#connection-notice")).toBeVisible();
+  await expect(page.locator("#map-empty")).toHaveText("Connection lost · last view");
+  await expect(page.locator("#map-empty")).toBeVisible();
+  await expect(page.locator("#agent-state")).toHaveText("Waiting for game");
   await expect(page.getByRole("button", { name: "+ Add companion" })).toBeDisabled();
   await expect(atlas.getByRole("button", { name: "Mine", exact: true })).toBeDisabled();
+  connected = true;
+  events.emit("world", { snapshot: game.snapshot, observedAt: new Date().toISOString() }, false);
+  await expect(page.locator("#connection-notice")).toBeHidden();
+  await expect(page.locator("#map-empty")).toBeHidden();
+  await expect(page.getByRole("button", { name: "+ Add companion" })).toBeEnabled();
   assert.deepEqual(errors, []);
   console.log(
     `Browser smoke passed: companion creation/error recovery, mining, follow, stop, chat resume, manual tools, settings, activity, offline and mobile layout. Screenshots: ${artifacts}`,

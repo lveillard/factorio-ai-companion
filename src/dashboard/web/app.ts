@@ -153,6 +153,17 @@ function renderState() {
   }
   $("version").textContent = `v${state.version}`;
   const world = state.game.snapshot;
+  const connected = state.game.connected;
+  $("connection-notice").hidden = connected;
+  $("connection-notice").textContent = `Game connection unavailable. ${
+    ["127.0.0.1", "localhost", "::1"].includes(state.rcon.host)
+      ? "Open Factorio with the companion launcher, then host a multiplayer game."
+      : "Check the remote server's RCON connection."
+  } Spawn and the live map will be available when connected.`;
+  $("map-empty").hidden = connected && !!world;
+  $("map-empty").textContent = world
+    ? "Connection lost · last view"
+    : "Waiting for game connection";
   $("game-state").textContent = state.game.connected
     ? world?.paused
       ? "Game paused"
@@ -173,7 +184,9 @@ function renderState() {
     : state.agent.enabled
       ? state.agent.waiting
         ? "Working in game"
-        : "Listening"
+        : connected
+          ? "Listening"
+          : "Waiting for game"
       : "Paused";
   $("agent-detail").textContent =
     state.agent.error ||
@@ -207,7 +220,6 @@ function renderState() {
   }
   if (world) {
     $("surface").textContent = world.surface;
-    $("map-empty").hidden = true;
     $("map-coordinate").textContent =
       `x ${world.center.x.toFixed(1)}  y ${world.center.y.toFixed(1)}  ·  radius ${world.radius}`;
     $("map-note").textContent = world.entities_truncated ? "Partial view" : "";

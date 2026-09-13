@@ -1,9 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { readSettings } from "../config/settings";
 import { LOCAL_DIR } from "../src/config";
 import { factorioBinary, factorioModDirectory } from "./paths";
+import { configureLocalGame } from "./game-config";
 
 const settings = readSettings(),
   binary = factorioBinary();
@@ -31,26 +32,26 @@ if (running)
   throw new Error(
     "Save your game and close Factorio completely, then run bun run game:launch again. Configuration was not changed.",
   );
-const config = join(dirname(factorioModDirectory()), "config", "config.ini");
-if (!existsSync(config)) throw new Error(`Open Factorio once to create ${config}`);
+const data = dirname(factorioModDirectory());
+const source = join(data, "config", "config.ini");
+if (!existsSync(source)) throw new Error(`Open Factorio once to create ${source}`);
+// Keep the launch profile outside Steam's synced config.ini. Game data and mods stay shared.
+const directory = join(LOCAL_DIR, "game");
+mkdirSync(directory, { recursive: true });
+const config = join(directory, "config.ini");
 const backups = join(LOCAL_DIR, "game-config-backups");
 mkdirSync(backups, { recursive: true });
-let text = readFileSync(config, "utf8");
-const original = text;
-for (const [key, value] of Object.entries({
-  "local-rcon-socket": `127.0.0.1:${settings.FACTORIO_RCON_PORT}`,
-  "local-rcon-password": settings.FACTORIO_RCON_PASSWORD,
-})) {
-  if (/[\r\n]/.test(value)) throw new Error("Factorio config values cannot contain newlines");
-  const pattern = new RegExp(`^;?\\s*${key}=.*$`, "m");
-  if (pattern.test(text)) text = text.replace(pattern, () => `${key}=${value}`);
-  else text = text.replace(/^\[other\]\r?\n/m, (match) => `${match}${key}=${value}\n`);
+const input = existsSync(config) ? config : source;
+const original = readFileSync(input, "utf8");
+const text = configureLocalGame(original, settings, {
+  readData: resolve(dirname(binary), "../../data"),
+  writeData: data,
+});
+if (text !== original || !existsSync(config)) {
+  cpSync(input, join(backups, `config-${Date.now()}.ini`));
+  writeFileSync(config, text, { mode: 0o600 });
 }
-if (text !== original) {
-  cpSync(config, join(backups, `config-${Date.now()}.ini`));
-  writeFileSync(config, text);
-}
-const child = spawn(binary, ["--config", config], {
+const child = spawn(binary, ["--config", config, "--mod-directory", factorioModDirectory()], {
   detached: true,
   windowsHide: false,
   stdio: "ignore",
