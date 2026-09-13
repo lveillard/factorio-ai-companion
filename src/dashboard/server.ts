@@ -7,6 +7,7 @@ import { createMCPHttp } from "../mcp/server";
 import { RCONClient } from "../rcon/client";
 import { EventLog } from "../runtime/events";
 import { GameBridge } from "../runtime/game";
+import { FeedbackStore } from "../runtime/feedback";
 import { CodexClient } from "../codex/client";
 import { CompanionSession } from "../runtime/session";
 import pkg from "../../package.json";
@@ -56,6 +57,7 @@ export function createApplication(
         password: settings.FACTORIO_RCON_PASSWORD,
       }),
       events,
+      new FeedbackStore(settings, events),
     );
   const session =
     services?.session ||
@@ -71,6 +73,7 @@ export function createApplication(
         maxQueued: settings.MAX_QUEUED_MESSAGES,
         maxContinuations: settings.MAX_JOB_CONTINUATIONS,
         jobReviewMs: settings.JOB_REVIEW_TIMEOUT_MS,
+        maxFeedbackCalls: settings.MAX_FEEDBACK_CALLS,
       },
     );
   const mcp = createMCPHttp(game);
@@ -149,6 +152,7 @@ export function createApplication(
           agent: session.status(),
           events: events.recent,
           tools: game.schemas,
+          feedback: game.feedback?.list() ?? { repository: null, reports: [] },
           rcon: { host: settings.FACTORIO_HOST, port: settings.FACTORIO_RCON_PORT },
           mcp: { url: `${publicUrl.origin}/mcp`, protocol: "2026-07-28" },
         });
@@ -241,6 +245,9 @@ export function createApplication(
         }
         case "/api/tools/call":
           return json(await session.manualTool(String(data.name), data.args));
+        case "/api/feedback/sync":
+          await game.feedback?.sync();
+          return json(game.feedback?.list() ?? { repository: null, reports: [] });
         default:
           return json({ error: "Not found" }, 404);
       }

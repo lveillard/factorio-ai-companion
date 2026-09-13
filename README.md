@@ -63,6 +63,14 @@ bearer_token_env_var = "COMPANION_ACCESS_TOKEN"
 
 Set that environment variable to the service token before starting Codex. Codex uses its own ChatGPT login; no dashboard login is needed for this route. `config/harnesses.json` holds the client feature switches, and `codex:smoke` checks the pinned real client against this server without starting model inference. A custom harness can consume the same MCP endpoint and manage its model separately.
 
+## Feedback
+
+The orchestrator and MCP clients share `feedback_report` and `feedback_list`. Reports persist in `COMPANION_DATA_DIR/feedback.sqlite`; the dashboard's **Feedback** tab shows evidence, repeat counts and issue links. Stable cause keys group repeats.
+
+Set `FEEDBACK_GITHUB_REPOSITORY=owner/repo` to publish issues automatically. Use `FEEDBACK_GITHUB_TOKEN` with Issues read/write permission (including in Docker), or an existing local `gh auth login`. Leave the repository empty for local storage. Reports are scoped to their configured repository; changing it does not forward older reports elsewhere.
+
+Sync runs in the background, coalesces repeats, preserves text outside its managed issue section and reads open/closed state back from GitHub. Closed issues remain closed, including on a repeat. Offline reports stay queued. An uncertain create is reconciled by its issue marker, never blindly retried. **Sync GitHub** refreshes immediately. Publication includes only the report and bounded diagnostic metadata; full logs, chat and world snapshots are excluded and known secrets are redacted. Do not put private data in reports.
+
 ## Sources of truth
 
 | File | Drives |
@@ -74,6 +82,7 @@ Set that environment variable to the service token before starting Codex. Codex 
 | `config/harnesses.json` | Modern MCP client switches for the Claude launcher and Codex integration check |
 | `config/dashboard.json` | Companion defaults, mining choices and job labels; form bounds come from the tool contract |
 | `config/agent.json` | Model defaults, chat delivery, factory review timing and compact automatic observations |
+| `config/feedback.json` | Feedback retention bounds, diagnostics, GitHub request and deduplication limits |
 
 Run `bun run generate` after changing configuration. Generated Lua and metadata are checked in so the mod can be packaged independently. Do not edit generated files. Lua handlers own game behavior; the dashboard, Codex host and MCP transport all share one serialized `GameBridge`.
 

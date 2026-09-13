@@ -893,6 +893,21 @@ dialog [role="alert"] {
     margin: 12px 16px 0;
   }
 }
+#feedback-reports {
+  padding: 16px;
+  overflow: auto;
+}
+.feedback-report {
+  padding: 12px 0;
+  overflow-wrap: anywhere;
+}
+.feedback-report pre {
+  white-space: pre-wrap;
+}
+.feedback-evidence dd {
+  margin: 4px 0 16px;
+  white-space: pre-wrap;
+}
 @media (prefers-reduced-motion: reduce) {
   #messages {
     scroll-behavior: auto;

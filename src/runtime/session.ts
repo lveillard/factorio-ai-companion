@@ -45,6 +45,7 @@ type ActiveTurn = {
   turnId: string | null;
   text: string;
   toolCalls: number;
+  feedbackCalls?: number;
   completing: boolean;
   startedAt: number;
   firstResponseAt?: number;
@@ -64,6 +65,7 @@ Use companion_capabilities to check actual recipe access and construction robots
 Use world_observe for context, companion_stop to cancel work and wait briefly before polling an asynchronous job. Never regenerate terrain, grant yourself items or control the human player's character.
 Briefly explain your plan before acting. After scheduling native jobs, report progress and end the turn; the host wakes you when they finish. Avoid repeatedly polling a running job in the same turn.
 If waiting for a machine or research rather than a character job, call wait once and end the turn. The host schedules a later review. Never repeatedly poll factory production in the same turn.
+For an observed bug, recurring friction or missing capability, use feedback_list to check prior reports, then feedback_report with a stable cause key, concise English expected/actual behavior and reproduction. Include evidence, never secrets, personal data or chat transcripts. Ordinary material shortages and game pauses are not bugs. Feedback persists locally and may publish to the configured GitHub repository. Closed reports stay closed; report a reproduced regression under the same key. Feedback has its own small tool allowance and never replaces the user's task.
 Keep replies short and concrete. The application mirrors your progress and final replies to game chat. Use ordinary commentary for updates; chat_say is only needed to speak explicitly as a different companion. Never start unrelated tasks.`;
 
 const toolContract = createHash("sha256")
@@ -117,6 +119,7 @@ export class CompanionSession {
       maxQueued: defaults.MAX_QUEUED_MESSAGES,
       maxContinuations: defaults.MAX_JOB_CONTINUATIONS,
       jobReviewMs: defaults.JOB_REVIEW_TIMEOUT_MS,
+      maxFeedbackCalls: defaults.MAX_FEEDBACK_CALLS,
     },
   ) {
     mkdirSync(directory, { recursive: true });
@@ -569,7 +572,24 @@ export class CompanionSession {
         });
         return;
       }
-      if (++active.toolCalls > this.limits.maxToolCalls) {
+      const feedback = COMMANDS[tool]?.execution === "feedback";
+      if (
+        feedback &&
+        (active.feedbackCalls = (active.feedbackCalls || 0) + 1) >
+          (this.limits.maxFeedbackCalls ?? defaults.MAX_FEEDBACK_CALLS)
+      ) {
+        this.codex.respond(id, {
+          success: false,
+          contentItems: [
+            {
+              type: "inputText",
+              text: "Feedback allowance exhausted. Continue the player's task or end the turn.",
+            },
+          ],
+        });
+        return;
+      }
+      if (!feedback && ++active.toolCalls > this.limits.maxToolCalls) {
         this.codex.respond(id, {
           success: false,
           contentItems: [

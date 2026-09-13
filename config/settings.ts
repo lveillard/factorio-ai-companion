@@ -26,7 +26,32 @@ export const SETTINGS = {
   COMPANION_DATA_DIR: {
     type: "string",
     default: ".local",
-    description: "Persistent logs, chat state and isolated Codex credentials",
+    description: "Persistent logs, chat, feedback database and isolated Codex credentials",
+  },
+  FEEDBACK_GITHUB_REPOSITORY: {
+    type: "string",
+    default: "",
+    description: "owner/repo for automatic feedback issues; empty keeps reports local",
+  },
+  FEEDBACK_GITHUB_TOKEN: {
+    type: "string",
+    default: "",
+    secret: true,
+    description: "GitHub token with Issues read/write access; falls back to local gh login",
+  },
+  FEEDBACK_SYNC_INTERVAL_MS: {
+    type: "integer",
+    default: 60000,
+    min: 10000,
+    max: 3600000,
+    description: "Coalesce feedback and refresh GitHub issue state at this interval",
+  },
+  MAX_FEEDBACK_CALLS: {
+    type: "integer",
+    default: 3,
+    min: 1,
+    max: 10,
+    description: "Separate feedback tool allowance per Codex turn, even after game tools run out",
   },
   FACTORIO_HOST: {
     type: "string",

@@ -56,6 +56,36 @@ test("modern MCP HTTP exposes the canonical tools and rejects unauthenticated/le
     );
     const status = await client.callTool({ name: "session_status", arguments: {} });
     expect(status.isError).toBe(false);
+    expect(list.tools.find((tool) => tool.name === "feedback_report")!.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: true,
+    });
+    const feedback = await client.callTool({
+      name: "feedback_report",
+      arguments: {
+        key: "http-test",
+        title: "Local report via MCP",
+        category: "friction",
+        expected: "Record feedback without a game",
+        actual: "MCP fixture",
+        reproduction: "Call feedback_report",
+      },
+    });
+    expect(feedback.isError).toBe(false);
+    const state = await (
+      await request("/api/state", { headers: { authorization: `Bearer ${token}` } })
+    ).json();
+    expect(state.feedback.reports[0]).toMatchObject({ key: "http-test", state: "local" });
+    expect(
+      (
+        await request("/api/feedback/sync", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        })
+      ).status,
+    ).toBe(401);
     const failed = await client.callTool({
       name: "companion_stop",
       arguments: { companionId: -1 },
@@ -86,3 +116,54 @@ test("modern MCP HTTP exposes the canonical tools and rejects unauthenticated/le
     rmSync(directory, { recursive: true });
   }
 }, 15000);
+
+test("HTTP host policy uses WHATWG IDN canonicalization and rejects lookalike or substituted hosts", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "factorio-idn-"));
+  const app = createApplication(
+    readSettings({
+      COMPANION_DATA_DIR: directory,
+      COMPANION_PUBLIC_URL: "https://bücher.example",
+      COMPANION_ACCESS_TOKEN: "test".repeat(16),
+    }),
+  );
+  try {
+    expect(app.url).toBe("https://xn--bcher-kva.example");
+    for (const url of [
+      "https://bücher.example/healthz",
+      "https://xn--bcher-kva.example/healthz",
+      "http://127。0。0。1:3210/healthz",
+    ])
+      expect((await app.fetch(new Request(url))).status).toBe(200);
+    for (const url of [
+      "https://bücher.example.evil.test/healthz",
+      "https://bücher.example@evil.test/healthz",
+      "http://localhоst:3210/healthz",
+    ])
+      expect((await app.fetch(new Request(url))).status).toBe(403);
+    expect(
+      (await app.fetch(new Request(`${app.url}/healthz`, { headers: { host: "evil.test" } })))
+        .status,
+    ).toBe(403);
+    expect(
+      (
+        await app.fetch(
+          new Request(`${app.url}/healthz`, {
+            headers: { origin: "https://xn--bcher-kva.example" },
+          }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await app.fetch(
+          new Request(`${app.url}/healthz`, {
+            headers: { origin: "https://xn--bcher-kva.example.evil.test" },
+          }),
+        )
+      ).status,
+    ).toBe(403);
+  } finally {
+    await app.close();
+    rmSync(directory, { recursive: true });
+  }
+});

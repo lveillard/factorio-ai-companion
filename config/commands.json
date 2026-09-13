@@ -2601,5 +2601,99 @@
       ],
       "additionalProperties": false
     }
+  },
+  "feedback_report": {
+    "description": "Record an observed bug or recurring friction. Reuse a stable key for the same cause. Persists locally and syncs to the configured GitHub repository. Include concise evidence, never credentials or chat transcripts.",
+    "execution": "feedback",
+    "effect": "report",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Stable lowercase cause identifier, e.g. research-trigger-not-exposed",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Short English issue title"
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "bug",
+            "friction",
+            "capability"
+          ]
+        },
+        "expected": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1500,
+          "description": "Expected behavior"
+        },
+        "actual": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1500,
+          "description": "Observed behavior and evidence"
+        },
+        "reproduction": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "description": "Minimal steps or tool calls to reproduce"
+        },
+        "suggestion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "Optional proposed improvement"
+        },
+        "companionId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "default": 0
+        }
+      },
+      "required": [
+        "key",
+        "title",
+        "category",
+        "expected",
+        "actual",
+        "reproduction"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "feedback_list": {
+    "description": "List recent feedback, occurrence counts and GitHub review state. Supply a key to read its full report before reporting a repeat.",
+    "execution": "feedback",
+    "effect": "read",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Optional stable report key",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        }
+      },
+      "additionalProperties": false
+    }
   }
 }

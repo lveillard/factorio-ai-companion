@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { CompanionSession } from "../src/runtime/session";
 import { EventLog } from "../src/runtime/events";
 import { GameBridge } from "../src/runtime/game";
+import { FeedbackStore } from "../src/runtime/feedback";
 import type { CodexClient } from "../src/codex/client";
 import type { RCONClient } from "../src/rcon/client";
 import { readSettings } from "../config/settings";
@@ -33,6 +34,7 @@ class FakeCodex extends EventEmitter {
 }
 function fixture(
   overrides: Partial<NonNullable<ConstructorParameters<typeof CompanionSession>[4]>> = {},
+  withFeedback = false,
 ) {
   const directory = mkdtempSync(join(tmpdir(), "factorio-session-"));
   const events = new EventLog();
@@ -44,7 +46,13 @@ function fixture(
     isConnected: () => true,
     disconnect: async () => {},
   } as unknown as RCONClient;
-  const game = new GameBridge(rcon, events),
+  const game = new GameBridge(
+      rcon,
+      events,
+      withFeedback
+        ? new FeedbackStore(readSettings({ COMPANION_DATA_DIR: directory }), events)
+        : undefined,
+    ),
     codex = new FakeCodex();
   const defaults = readSettings({});
   const session = new CompanionSession(game, codex as unknown as CodexClient, events, directory, {
@@ -54,6 +62,7 @@ function fixture(
     maxQueued: defaults.MAX_QUEUED_MESSAGES,
     maxContinuations: defaults.MAX_JOB_CONTINUATIONS,
     jobReviewMs: defaults.JOB_REVIEW_TIMEOUT_MS,
+    maxFeedbackCalls: defaults.MAX_FEEDBACK_CALLS,
     ...overrides,
   });
   return {
@@ -561,6 +570,48 @@ test("tool budget exhaustion preserves native work and allows a final progress r
     expect(f.session.status().messages[0]!.status).toBe("waiting");
     expect(f.session.status().messages.at(-1)!.gameDelivery).toBe("sent");
     expect(f.codex.calls).not.toContain("turn/interrupt");
+  } finally {
+    await f.close();
+  }
+});
+
+test("feedback has a bounded allowance after game tools run out and does not claim game work", async () => {
+  const f = fixture({ maxToolCalls: 1, maxFeedbackCalls: 2 }, true);
+  try {
+    await f.game.observe(1);
+    f.session.enqueue("Mine iron", 1);
+    await f.session.resume();
+    await act(f);
+    await act(f, "companion_stop");
+    const send = (tool: string, args: unknown) =>
+      f.session["request"]({
+        id: crypto.randomUUID(),
+        method: "item/tool/call",
+        params: {
+          threadId: "thread1",
+          turnId: "turn1",
+          namespace: "factorio",
+          tool,
+          arguments: args,
+        },
+      });
+    const report = {
+      key: "budget-fixture",
+      title: "Budget fixture",
+      category: "friction",
+      expected: "Persist feedback",
+      actual: "Fixture",
+      reproduction: "Exhaust game allowance",
+      companionId: 2,
+    };
+    await send("feedback_list", {});
+    await send("feedback_report", report);
+    await send("feedback_report", report);
+    expect(f.game.feedback!.list().reports[0]!.occurrences).toBe(1);
+    expect(f.session["active"]!.actedOn.has(2)).toBe(false);
+    expect(f.session.status()).toMatchObject({ enabled: true, busy: true });
+    await complete(f);
+    expect(f.session.status().messages[0]!.status).toBe("waiting");
   } finally {
     await f.close();
   }
