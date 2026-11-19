@@ -1,6 +1,5 @@
 local lifecycle = require("commands.lifecycle")
 local u = require("commands.init")
-local queues = require("commands.queues")
 local entity_info = require("commands.entity_info")
 
 u.register("companion_list", function(args)
@@ -32,6 +31,7 @@ u.register("companion_spawn", function(args, player)
     if req_id and storage.companions[req_id] then
       local c = storage.companions[req_id]
       if c.entity and c.entity.valid then u.json_response({status = "exists", id = req_id}); return end
+      u.json_response({id = req_id, error = "Companion is dead; use companion_respawn (no starting items)"}); return
     end
     local id = req_id or storage.companion_next_id
     if not req_id then storage.companion_next_id = storage.companion_next_id + 1
@@ -60,7 +60,8 @@ u.register("companion_spawn", function(args, player)
         end
       end
       storage.companions[id] = {entity = e, color = color, name = name,
-                                label = u.render_label(e, name, color), spawned_tick = game.tick}
+                                label = u.render_label(e, name, color), spawned_tick = game.tick,
+                                surface_index = surface.index, force_index = force.index}
       if storage.dead_companions then storage.dead_companions[id] = nil end  -- (re)spawned -> no longer dead
       game.print("[" .. name .. " spawned]", u.print_color(color))
       u.json_response({spawned = true, id = id, name = name})
@@ -103,11 +104,7 @@ end)
 
 u.register("companion_respawn", function(args)
   u.safe_command(function()
-    local id = u.find_companion(args.companionId)
-    if not id then u.not_found(); return end
-    local result = queues.debug_respawn_entity(id)
-    if result.error then u.json_response({id = id, error = result.error})
-    else u.json_response({id = id, respawned = result.respawned}) end
+    u.json_response(lifecycle.respawn(args.companionId))
   end)
 end)
 

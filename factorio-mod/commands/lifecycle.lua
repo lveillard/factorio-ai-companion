@@ -29,4 +29,63 @@ function M.stop(cid)
   return stopped
 end
 
+-- A pre-fix dead record has no readable entity context. Recover it only when
+-- the world has one surface and one non-enemy/non-neutral force. Never infer
+-- its home from the operator's current position, surface or selected companion.
+local function legacy_context()
+  local surface, force
+  for _, candidate in pairs(game.surfaces) do
+    if candidate.valid then
+      if surface and surface ~= candidate then return nil end
+      surface = candidate
+    end
+  end
+  for _, candidate in pairs(game.forces) do
+    if candidate.valid and candidate.name ~= "enemy" and candidate.name ~= "neutral" then
+      if force and force ~= candidate then return nil end
+      force = candidate
+    end
+  end
+  return surface, force
+end
+
+function M.respawn(identifier)
+  local id = tonumber(identifier)
+  local c = id and storage.companions[id]
+  if not c then return {error = "Existing companion ID required"} end
+  if c.entity and c.entity.valid then return {id = id, error = "Companion is alive; respawn refused"} end
+  storage.dead_companions = storage.dead_companions or {}
+  storage.dead_companions[id] = storage.dead_companions[id] or game.tick
+  -- Cancel before creating: no stale queue can craft/refund/move the new body.
+  M.stop(id)
+  if storage.walk_last_arrived then storage.walk_last_arrived[id] = nil end
+  local surface, force
+  if c.surface_index or c.force_index then
+    surface = c.surface_index and game.surfaces[c.surface_index]
+    force = c.force_index and game.forces[c.force_index]
+  else
+    surface, force = legacy_context()
+  end
+  if not surface or not surface.valid or not force or not force.valid then
+    return {id = id, error = "Respawn surface/force unavailable or ambiguous; dead record retained"}
+  end
+  -- Persist legacy inference even on failure so later retries cannot switch homes.
+  c.surface_index, c.force_index = surface.index, force.index
+  local pos = surface.find_non_colliding_position("character", force.get_spawn_position(surface), 64, 0.5)
+  if not pos then return {id = id, error = "No valid location near force spawn; dead record retained"} end
+  local e = surface.create_entity{name = "character", position = pos, force = force}
+  if not e or not e.valid then return {id = id, error = "Failed to create character at force spawn; dead record retained"} end
+  -- Commit the new body before cosmetic work: even a render error must never
+  -- leave an untracked character that a retry could duplicate. No kit/restoration.
+  c.entity = e
+  storage.dead_companions[id] = nil
+  local ok, err = pcall(function()
+    e.color = c.color or u.get_companion_color(id)
+    if c.label and c.label.valid then c.label.destroy() end
+    c.label = u.render_label(e, c.name or ("#" .. id), e.color)
+  end)
+  if not ok then u.log_error(err, "respawn_label") end
+  return {id = id, respawned = true}
+end
+
 return M

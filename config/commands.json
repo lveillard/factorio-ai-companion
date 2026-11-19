@@ -2166,7 +2166,7 @@
     }
   },
   "companion_respawn": {
-    "description": "Recover a stalled companion entity while preserving inventory",
+    "description": "Respawn an existing dead companion at its force spawn, keeping identity but granting no items or lost inventory. Living companions cannot be respawned.",
     "execution": "game",
     "effect": "act",
     "inputSchema": {
@@ -2183,10 +2183,7 @@
         "companionId"
       ],
       "additionalProperties": false
-    },
-    "before": [
-      "companion_stop"
-    ]
+    }
   },
   "inserter_set_filter": {
     "description": "Set the filter on the nearest reachable inserter",

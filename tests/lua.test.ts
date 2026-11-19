@@ -449,10 +449,16 @@ test("Lua: drill footprints reject mixed or missing resources without creating e
 test("Lua: a failed recovery clone leaves the companion and its inventory intact", () =>
   run(`
   entity.surface.find_non_colliding_position=function(_,pos) return pos end
-  entity.clone=function() return nil end
+  local cloned=false
+  entity.clone=function() cloned=true;return nil end
   entity.destroy=function() error("Original must survive a failed clone") end
-  local result=queues.debug_respawn_entity(1)
-  assert(not result.respawned and storage.companions[1].entity==entity and items.plate==20)
+  entity.surface.find_entities_filtered=function() return {} end
+  assert(not queues.start_gather(1,"ore",1).error)
+  local q=storage.gather_queues[1]
+  q.state="approach";q.entity_pos={x=1,y=0}
+  q._stale_total=20;q._stale_pos={x=0,y=0};q._stale_ticks=u.settings.queue_tuning.universal_stale_ticks+1
+  require("commands.queues_core").process_queue("gather_queues",function() error("Stalled job must finish first") end)
+  assert(cloned and storage.companions[1].entity==entity and items.plate==20)
 `));
 
 test("Lua: clearing wrong furnace output preserves quality and rolls back overflow", () =>
@@ -653,5 +659,172 @@ test("Lua: overlay controls use validated commands and send a cancellation event
   panel().create.fac_name.text="Almendra";click(panel().create.fac_spawn)
   assert(storage.companion_messages[2].control.tool=="companion_spawn")
   assert(panel().create.fac_name.text=="")
+`,
+  ));
+
+const respawnFixture = `
+  require("commands.companion")
+  local lifecycle=require("commands.lifecycle")
+  local old=setmetatable({valid=false},{__index=function(_,key) error("Invalid entity read: "..key) end})
+  local color={r=0.1,g=0.3,b=0.8}
+  local record={entity=old,name="builder1",color=color,spawned_tick=17}
+  storage.companions[1]=record;storage.dead_companions={[1]=23};storage.companion_next_id=9
+  local surface={valid=true,index=1,name="nauvis"}
+  local force={valid=true,index=1,name="player"}
+  game.surfaces={[1]=surface};game.forces={[1]=force,enemy={valid=true,name="enemy"},neutral={valid=true,name="neutral"}}
+  game.players={{valid=true,position={x=900,y=800},surface={index=8},force={index=8}}}
+  local creates,finds=0,0
+  local body
+  force.get_spawn_position=function(s) assert(s==surface);return {x=120,y=-80} end
+  surface.find_non_colliding_position=function(name,pos,radius,precision)
+    assert(name=="character" and pos.x==120 and pos.y==-80 and radius==64 and precision==0.5)
+    finds=finds+1;return {x=121,y=-80}
+  end
+  surface.create_entity=function(args)
+    assert(args.name=="character" and args.force==force and args.position.x==121 and args.position.y==-80)
+    assert(not storage.walking_queues[1] and not storage.craft_queues[1])
+    creates=creates+1
+    body={valid=true,surface=surface,force=force,position=args.position,
+      get_inventory=function() error("Respawn must not read or restore inventory") end,
+      insert=function() error("Respawn must grant zero items") end}
+    return body
+  end
+  u.render_label=function(e,name,c) assert(e==body and name=="builder1" and c==color);return {valid=true} end
+  local result
+  u.json_response=function(value) result=value end
+  local function respawn(id) u.handlers.companion_respawn{companionId=id};return result end
+`;
+
+test("Lua: an already-dead legacy record respawns once at force spawn without kit or inventory restoration", () =>
+  run(
+    respawnFixture +
+      `
+  storage.walking_queues[1]={state="walking",target={x=900,y=800}}
+  storage.craft_queues[1]={state="craft",inflight=true,target=4,recipe="gear",tick_start=0,ticks_per=60}
+  storage.gather_queues[1]={state="mine",product="ore",start_count=0,target=20}
+  storage.path_requests={[11]=1,[12]=2};storage.active_step[1]={};storage.walk_last_arrived={[1]={x=900,y=800}}
+  storage.tasks[7]={cid=1,status="active",reserved={plate=5}}
+  storage.tasks[8]={cid=2,status="active",reserved={plate=3}}
+  storage.reserved={[1]={plate=5},[2]={plate=3}}
+  storage.walking_queues[2]={target={x=50,y=50}}
+  assert(respawn(1).respawned)
+  assert(storage.tasks[7].status=="cancelled" and storage.reserved[1].plate==0)
+  assert(storage.tasks[8].status=="active" and storage.reserved[2].plate==3 and storage.walking_queues[2])
+  assert(storage.companions[1]==record and record.entity==body and record.color==color and body.color==color)
+  assert(record.name=="builder1" and record.spawned_tick==17 and storage.companion_next_id==9)
+  assert(record.surface_index==1 and record.force_index==1 and not storage.dead_companions[1])
+  assert(not storage.gather_queues[1] and not storage.active_step[1] and not storage.path_requests[11] and storage.path_requests[12]==2)
+  assert(not storage.walk_last_arrived[1] and queues.get_craft_status(1).state=="cancelled")
+  assert(items.plate==20 and not items.gear)
+  assert(respawn(1).error:find("alive") and creates==1 and finds==1)
+`,
+  ));
+
+test("Lua: missing and unknown respawn IDs cannot create characters or cancel live work", () =>
+  run(
+    respawnFixture +
+      `
+  assert(respawn(nil).error and respawn(999).error and respawn("builder1").error)
+  record.entity=entity;storage.walking_queues[1]={target={x=20,y=0}}
+  assert(respawn(1).error:find("alive") and storage.walking_queues[1])
+  commands={add_command=function() end}
+  for name,def in pairs(require("commands.contract")) do
+    if def.execution=="game" and not u.handlers[name] then u.handlers[name]=function() u.json_response{} end end
+  end
+  require("commands.dispatch").call("companion_respawn",{companionId=1})
+  assert(result.error:find("alive") and storage.walking_queues[1], "Dispatcher must not stop rejected live respawns")
+  assert(creates==0 and finds==0 and storage.companion_next_id==9)
+`,
+  ));
+
+for (const failure of [
+  "location-nil",
+  "location-error",
+  "create-nil",
+  "create-error",
+  "create-invalid",
+])
+  test(`Lua: respawn ${failure} retains identity/death marker, cancels stale work and safely retries`, () =>
+    run(
+      respawnFixture +
+        `
+    local find,create=surface.find_non_colliding_position,surface.create_entity
+    ${failure.startsWith("location") ? `surface.find_non_colliding_position=function() ${failure.endsWith("error") ? 'error("native find failed")' : "return nil"} end` : `surface.create_entity=function() ${failure.endsWith("error") ? 'error("native create failed")' : failure.endsWith("invalid") ? "return {valid=false}" : "return nil"} end`}
+    storage.walking_queues[1]={target={x=900,y=800}}
+    assert(respawn(1).error and storage.companions[1]==record and record.entity==old)
+    assert(storage.dead_companions[1]==23 and not storage.walking_queues[1] and creates==0)
+    assert(storage.companion_next_id==9 and record.color==color and record.name=="builder1")
+    surface.find_non_colliding_position=find;surface.create_entity=create
+    assert(respawn(1).respawned and creates==1 and not storage.dead_companions[1])
+  `,
+    ));
+
+for (const ambiguity of ["surface", "force", "missing-surface", "missing-force"])
+  test(`Lua: respawn fails closed for ${ambiguity} context`, () =>
+    run(
+      respawnFixture +
+        `
+    ${ambiguity === "surface" ? "game.surfaces[2]={valid=true,index=2}" : ambiguity === "force" ? 'game.forces[2]={valid=true,index=2,name="other"}' : ambiguity === "missing-surface" ? "record.surface_index=99;record.force_index=1" : "record.surface_index=1;record.force_index=99"}
+    assert(respawn(1).error:find("ambiguous"))
+    assert(creates==0 and finds==0 and record.entity==old and storage.dead_companions[1]==23)
+  `,
+    ));
+
+test("Lua: cosmetic respawn failure cannot orphan a body or allow duplicate retry", () =>
+  run(
+    respawnFixture +
+      `
+  u.render_label=function() error("render failed") end
+  assert(respawn(1).respawned and record.entity==body and not storage.dead_companions[1])
+  assert(respawn(1).error:find("alive") and creates==1)
+`,
+  ));
+
+test("Lua: companion_spawn grants a kit only to a new identity, never an existing dead record", () =>
+  run(
+    respawnFixture +
+      `
+  u.handlers.companion_spawn{companionId=1,name="replacement"}
+  assert(result.error and creates==0 and record.entity==old and record.name=="builder1")
+  assert(storage.dead_companions[1]==23 and storage.companion_next_id==9)
+  game.players={}
+  local granted={}
+  surface.find_non_colliding_position=function(_,pos) return pos end
+  surface.create_entity=function(args)
+    body={valid=true,surface=surface,force=force,get_inventory=function() return {
+      insert=function(stack) granted[stack.name]=(granted[stack.name] or 0)+stack.count end} end}
+    return body
+  end
+  game.forces.player=force
+  u.render_label=function() return {} end
+  u.handlers.companion_spawn{name="fresh"}
+  assert(result.spawned and result.id==9 and storage.companion_next_id==10)
+  for name,count in pairs(u.settings.starting_items) do assert(granted[name]==count) end
+  u.handlers.companion_spawn{companionId=9,name="fresh"}
+  assert(result.status=="exists")
+  for name,count in pairs(u.settings.starting_items) do assert(granted[name]==count) end
+`,
+  ));
+
+test("Lua: native death captures original context, and listing/configuration preserve existing dead records", () =>
+  run(
+    respawnFixture +
+      `
+  local init,changed,fac;local events={}
+  defines.events={on_entity_died=2,on_script_path_request_finished=1}
+  script={active_mods={["ai-companion"]="test"},on_init=function(fn) init=fn end,
+    on_configuration_changed=function(fn) changed=fn end,on_event=function(id,fn) if id then events[id]=fn end end,on_nth_tick=function() end}
+  commands={add_command=function(_,_,fn) fac=fn end}
+  require("control")
+  game.players={}
+  changed()
+  assert(record.entity==old and storage.dead_companions[1]==23)
+  fac{parameter="list"};assert(storage.companions[1]==record)
+  record.entity=entity;entity.surface=surface;entity.force=force
+  game.surfaces[2]={valid=true,index=2};game.forces[2]={valid=true,index=2,name="other"}
+  events[defines.events.on_entity_died]{entity=entity}
+  assert(record.surface_index==1 and record.force_index==1)
+  record.entity=old
+  assert(respawn(1).respawned and creates==1)
 `,
   ));

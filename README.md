@@ -63,6 +63,12 @@ bearer_token_env_var = "COMPANION_ACCESS_TOKEN"
 
 Set that environment variable to the service token before starting Codex. Codex uses its own ChatGPT login; no dashboard login is needed for this route. `config/harnesses.json` holds the client feature switches, and `codex:smoke` checks the pinned real client against this server without starting model inference. A custom harness can consume the same MCP endpoint and manage its model separately.
 
+## Recovering a dead companion
+
+Call `companion_respawn` with the existing numeric `companionId`. It reuses the dead record's ID, name and color, cancels stale work and creates an empty character near that force's spawn on its original surface. It never teleports a living companion, grants another starting kit, restores lost inventory or consumes a new ID. `companion_spawn` remains the one-time creation/starting-kit path and rejects existing dead IDs.
+
+New characters and native death events retain surface/force indices; configuration changes also backfill living records. For an already-dead pre-fix record with no readable context, recovery is allowed only when the world has exactly one valid surface and one valid non-enemy/non-neutral force. Multiple possible contexts, deleted context, no collision-free spawn or native creation failure leave the dead record available for retry. No operator/player position is used. Worlds with ambiguous legacy context require separately verified context repair, not a guessed teleport. Cosmetic label failures cannot cause a second character on retry.
+
 ## Sources of truth
 
 | File | Drives |
