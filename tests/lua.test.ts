@@ -814,12 +814,22 @@ test("Lua: native death captures original context, and listing/configuration pre
   defines.events={on_entity_died=2,on_script_path_request_finished=1}
   script={active_mods={["ai-companion"]="test"},on_init=function(fn) init=fn end,
     on_configuration_changed=function(fn) changed=fn end,on_event=function(id,fn) if id then events[id]=fn end end,on_nth_tick=function() end}
-  commands={add_command=function(_,_,fn) fac=fn end}
+  commands={add_command=function(name,_,fn) if name=="fac" then fac=fn end end}
   require("control")
   game.players={}
   changed()
   assert(record.entity==old and storage.dead_companions[1]==23)
+  local messages={}
+  game.print=function(message) messages[#messages+1]=message end
   fac{parameter="list"};assert(storage.companions[1]==record)
+  assert(#messages==1 and messages[1]:find("#1",1,true) and messages[1]:find("builder1",1,true))
+  assert(messages[1]:find("is dead",1,true) and messages[1]:find("companion_respawn",1,true))
+  assert(messages[1]:find("companionId=1",1,true) and messages[1]:find("no items restored",1,true))
+  assert(not messages[1]:find("No companions",1,true) and not messages[1]:find("/fac spawn",1,true))
+  storage.companions={};messages={}
+  fac{parameter="list"}
+  assert(#messages==1 and messages[1]=="[AI Companion] No companions. /fac spawn")
+  storage.companions[1]=record
   record.entity=entity;entity.surface=surface;entity.force=force
   game.surfaces[2]={valid=true,index=2};game.forces[2]={valid=true,index=2,name="other"}
   events[defines.events.on_entity_died]{entity=entity}

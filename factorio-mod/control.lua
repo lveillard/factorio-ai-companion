@@ -81,11 +81,15 @@ end
 subcommands.list = function(player)
   local count = 0
   for id, c in pairs(storage.companions) do
+    count = count + 1
     if c.entity and c.entity.valid then
       local p = c.entity.position
       game.print(string.format("[#%d] (%.1f, %.1f)", id, p.x, p.y), u.print_color(c.color or u.get_companion_color(id)))
-      count = count + 1
-    end -- Keep dead records: companion_respawn reuses their identity.
+    else
+      -- Keep dead records and direct recovery to the no-item respawn path.
+      game.print(string.format("[#%d] %s is dead. Use companion_respawn with companionId=%d (no items restored).",
+        id, c.name or ("#" .. id), id), u.print_color(c.color or u.get_companion_color(id)))
+    end
   end
   if count == 0 then game.print("[AI Companion] No companions. /fac spawn", u.print_color(u.COLORS.system)) end
 end
