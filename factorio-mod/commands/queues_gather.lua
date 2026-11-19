@@ -312,13 +312,6 @@ function M.tick_gather_queues()
   end)
 end
 
-function M.debug_respawn_entity(cid)
-  local c = valid_companion(cid)
-  if not c then return {error = "Invalid companion"} end
-  local ok = respawn_companion_entity(cid, c)
-  return {respawned = ok}
-end
-
 function M.get_gather_status(cid)
   local q = storage.gather_queues[cid] or core.previous("gather_queues", cid)
   if not q then return {active = false} end

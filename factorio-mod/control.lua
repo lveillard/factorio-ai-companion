@@ -26,6 +26,7 @@ local function init_storage()
   storage.path_requests = storage.path_requests or {}
   storage.walk_last_outcome = storage.walk_last_outcome or {}
   storage.walk_last_arrived = storage.walk_last_arrived or {}
+  for _, c in pairs(storage.companions) do u.remember_companion_context(c) end
   queues.init()
   task_pool.init()
   gui.rebuild()
@@ -51,6 +52,18 @@ script.on_configuration_changed(function()
   game.print("[AI Companion] Updated to v" .. MOD_VERSION, u.print_color(u.COLORS.system))
 end)
 
+-- on_entity_died runs while entity context is still readable, before native removal.
+script.on_event(defines.events.on_entity_died, function(event)
+  for id, c in pairs(storage.companions or {}) do
+    if c.entity == event.entity then
+      u.remember_companion_context(c)
+      storage.dead_companions = storage.dead_companions or {}
+      storage.dead_companions[id] = storage.dead_companions[id] or game.tick
+      break
+    end
+  end
+end, {{filter = "type", type = "character"}})
+
 local subcommands = {}
 
 subcommands.gui = function(player, args)
@@ -68,11 +81,15 @@ end
 subcommands.list = function(player)
   local count = 0
   for id, c in pairs(storage.companions) do
+    count = count + 1
     if c.entity and c.entity.valid then
       local p = c.entity.position
       game.print(string.format("[#%d] (%.1f, %.1f)", id, p.x, p.y), u.print_color(c.color or u.get_companion_color(id)))
-      count = count + 1
-    else storage.companions[id] = nil end
+    else
+      -- Keep dead records and direct recovery to the no-item respawn path.
+      game.print(string.format("[#%d] %s is dead. Use companion_respawn with companionId=%d (no items restored).",
+        id, c.name or ("#" .. id), id), u.print_color(c.color or u.get_companion_color(id)))
+    end
   end
   if count == 0 then game.print("[AI Companion] No companions. /fac spawn", u.print_color(u.COLORS.system)) end
 end

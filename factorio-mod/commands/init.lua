@@ -140,15 +140,23 @@ function M.safe_command(callback)
   end
 end
 
+-- Persist only identity context, never inventory; invalid LuaEntities expose only valid.
+function M.remember_companion_context(c)
+  if c.entity and c.entity.valid then
+    c.surface_index = c.entity.surface.index
+    c.force_index = c.entity.force.index
+  end
+end
+
 function M.get_companion(id)
   local c = storage.companions[id]
-  if c and c.entity and c.entity.valid then return c end
+  if c and c.entity and c.entity.valid then M.remember_companion_context(c); return c end
   -- Record exists but the character entity is gone => the companion DIED (e.g. biters).
   -- Remember that so EVERY subsequent request can report it as dead instead of a vague
   -- "not found", letting the orchestrator/recorder react (discard/respawn) immediately.
   if c then
     storage.dead_companions = storage.dead_companions or {}
-    storage.dead_companions[id] = game.tick
+    storage.dead_companions[id] = storage.dead_companions[id] or game.tick
   end
   return nil
 end
